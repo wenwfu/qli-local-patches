@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000011 Mon Sep 17 00:00:00 2001
+From: Boot Debug <noreply@qti.qualcomm.com>
+Date: Wed, 08 Jul 2026 00:00:00 +0000
+Subject: [DEBUG] initramfs: mount tracefs early for BOOTPROF markers
+
+systemd writes BOOTPROF ftrace markers to /sys/kernel/tracing/trace_marker,
+but its unit-load phase (~3.5s) runs BEFORE systemd's own
+sys-kernel-tracing.mount (~3.85s), so the trace_marker node does not yet
+exist and the earliest markers are lost.
+
+Mount tracefs in the initramfs right after /sys, while the initramfs mount
+tree is still private (systemd sets shared propagation only later), so the
+existing `mount --move /sys $ROOTFS_DIR/sys` in the finish module carries
+the tracefs submount onto the rootfs. tracefs is then already present when
+systemd/udev start, so unit-load markers land. systemd's later
+sys-kernel-tracing.mount sees it already mounted and is a no-op.
+
+Best-effort: `|| true` so an unavailable tracefs never fails the initramfs.
+
+Upstream-Status: Inappropriate [debug instrumentation]
+---
+diff --git a/meta/recipes-core/initrdscripts/initramfs-framework/init b/meta/recipes-core/initrdscripts/initramfs-framework/init
+index 67590ad765..ff8c48023a 100755
+--- a/meta/recipes-core/initrdscripts/initramfs-framework/init
++++ b/meta/recipes-core/initrdscripts/initramfs-framework/init
+@@ -84,6 +84,13 @@ touch /etc/fstab
+ mkdir -p /proc /sys /run
+ mount -t proc proc /proc
+ mount -t sysfs sysfs /sys
++# BOOTPROF: mount tracefs early (while /sys is still private, before
++# systemd starts) so it rides mount --move /sys onto the rootfs and is
++# already present when systemd/udev write trace_marker during unit-load
++# -- which happens before systemd's own sys-kernel-tracing.mount. Best-
++# effort: never fail the initramfs if tracefs is unavailable.
++mkdir -p /sys/kernel/tracing
++mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null || true
+ mount -t tmpfs tmpfs /run
+ mkdir -p /run/lock
+ 

@@ -1,0 +1,126 @@
+From 0000000000000000000000000000000000000012 Mon Sep 17 00:00:00 2001
+From: Boot Debug <noreply@qti.qualcomm.com>
+Date: Wed, 08 Jul 2026 00:00:00 +0000
+Subject: [DEBUG] refpolicy: allow systemd/udev to write tracefs (BOOTPROF)
+
+The BOOTPROF instrumentation writes ftrace markers to
+/sys/kernel/tracing/trace_marker from systemd (init_t) and udevd (udev_t).
+Under SELinux enforcing these writes are denied, so no markers are recorded.
+
+Adds a minimal refpolicy module 'qcom_bootprof' allowing init_t and udev_t
+to open/write tracefs files and search tracefs dirs. Ships the full refpolicy
+trio -- .te (rules), .if (empty interface summary, needed by the doc build),
+.fc (empty file-contexts, needed by the .pp module build) -- plus a
+modules.conf append. Wired into the refpolicy-targeted bbappend SRC_URI after
+the nhx module (shares modules.conf, so must apply after it). Debug-only;
+drop this entry from local-patches.yml to restore stock policy.
+
+Upstream-Status: Inappropriate [debug instrumentation]
+---
+diff --git a/dynamic-layers/selinux/recipes-security/refpolicy/refpolicy-targeted/0002-Add-SELinux-policy-for-bootprof-tracefs.patch b/dynamic-layers/selinux/recipes-security/refpolicy/refpolicy-targeted/0002-Add-SELinux-policy-for-bootprof-tracefs.patch
+new file mode 100644
+index 00000000..09216621
+--- /dev/null
++++ b/dynamic-layers/selinux/recipes-security/refpolicy/refpolicy-targeted/0002-Add-SELinux-policy-for-bootprof-tracefs.patch
+@@ -0,0 +1,91 @@
++From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
++From: Boot Debug <noreply@qti.qualcomm.com>
++Date: Wed, 08 Jul 2026 00:00:00 +0000
++Subject: [PATCH] Add SELinux policy for BOOTPROF tracefs marker writes
++
++The BOOTPROF boot-time instrumentation makes systemd (init_t) and udevd
++(udev_t) write ftrace markers to /sys/kernel/tracing/trace_marker. Under
++SELinux enforcing these writes are denied (tclass=file, tcontext=tracefs_t),
++so no markers are recorded.
++
++Add a minimal policy module 'qcom_bootprof' that allows init_t and udev_t
++to open/write tracefs files and search tracefs directories. Ships the full
++.te/.if/.fc trio (the .if and .fc are minimal, as the module only adds allow
++rules and labels no files) so refpolicy's module build succeeds. Debug-only:
++drop this module to restore stock policy.
++
++Upstream-Status: Inappropriate [debug instrumentation]
++
++Signed-off-by: Boot Debug <noreply@qti.qualcomm.com>
++---
++ policy/modules.conf                      |  6 ++++++
++ policy/modules/services/qcom_bootprof.fc |  1 +
++ policy/modules/services/qcom_bootprof.if |  4 ++++
++ policy/modules/services/qcom_bootprof.te | 21 +++++++++++++++++++++
++ 4 files changed, 32 insertions(+)
++ create mode 100644 policy/modules/services/qcom_bootprof.fc
++ create mode 100644 policy/modules/services/qcom_bootprof.if
++ create mode 100644 policy/modules/services/qcom_bootprof.te
++
++diff --git a/policy/modules.conf b/policy/modules.conf
++index 1111111..2222222 100644
++--- a/policy/modules.conf
+++++ b/policy/modules.conf
++@@ -1,6 +1,12 @@
++ # Layer: services
++ # Module: qcom_nhx
++ #
++ # Qualcomm NHX camera test launcher
++ #
++ qcom_nhx = module
+++
+++# Layer: services
+++# Module: qcom_bootprof
+++#
+++# BOOTPROF tracefs marker access for systemd/udev
+++#
+++qcom_bootprof = module
++diff --git a/policy/modules/services/qcom_bootprof.fc b/policy/modules/services/qcom_bootprof.fc
++new file mode 100644
++index 0000000..5555555
++--- /dev/null
+++++ b/policy/modules/services/qcom_bootprof.fc
++@@ -0,0 +1 @@
+++# qcom_bootprof: no file contexts (allow-only module)
++diff --git a/policy/modules/services/qcom_bootprof.if b/policy/modules/services/qcom_bootprof.if
++new file mode 100644
++index 0000000..3333333
++--- /dev/null
+++++ b/policy/modules/services/qcom_bootprof.if
++@@ -0,0 +1,4 @@
+++## <summary>
+++## BOOTPROF: allow systemd/udev to write ftrace trace_marker under tracefs.
+++## Debug-only instrumentation module; no callable interfaces.
+++## </summary>
++diff --git a/policy/modules/services/qcom_bootprof.te b/policy/modules/services/qcom_bootprof.te
++new file mode 100644
++index 0000000..4444444
++--- /dev/null
+++++ b/policy/modules/services/qcom_bootprof.te
++@@ -0,0 +1,21 @@
+++policy_module(qcom_bootprof, 1.0)
+++
+++########################################
+++#
+++# BOOTPROF: allow systemd (init_t) and udev (udev_t) to write ftrace
+++# trace_marker under tracefs, for boot-time marker instrumentation.
+++# Debug-only; drop this module to restore stock policy.
+++#
+++
+++gen_require(`
+++	type init_t;
+++	type udev_t;
+++	type tracefs_t;
+++')
+++
+++# Write markers to /sys/kernel/tracing/trace_marker.
+++allow init_t tracefs_t:file { open write getattr append };
+++allow init_t tracefs_t:dir { search read getattr open };
+++
+++allow udev_t tracefs_t:file { open write getattr append };
+++allow udev_t tracefs_t:dir { search read getattr open };
+diff --git a/dynamic-layers/selinux/recipes-security/refpolicy/refpolicy-targeted_git.bbappend b/dynamic-layers/selinux/recipes-security/refpolicy/refpolicy-targeted_git.bbappend
+index baa5a242..3f663525 100644
+--- a/dynamic-layers/selinux/recipes-security/refpolicy/refpolicy-targeted_git.bbappend
++++ b/dynamic-layers/selinux/recipes-security/refpolicy/refpolicy-targeted_git.bbappend
+@@ -2,4 +2,5 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
+ 
+ SRC_URI:append:qcom = " \
+     file://0001-Add-SELinux-policy-for-nhx.sh.patch \
++    file://0002-Add-SELinux-policy-for-bootprof-tracefs.patch \
+ "

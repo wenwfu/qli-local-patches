@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
+From: Boot Debug <noreply@qti.qualcomm.com>
+Date: Mon, 30 Jun 2026 00:00:00 +0000
+Subject: [DEBUG] initramfs-framework: add /dev/kmsg timing markers around
+ ostree-prepare-root
+
+Instrumentation only - emits start/done markers to /dev/kmsg (visible in
+dmesg) around the ostree-prepare-root invocation in the initramfs ostree
+module, so its cost can be separated from udev settle and the rootfs
+mount/retry loop. No behavioural change. Revert after measurement.
+
+Upstream-Status: Inappropriate [debug instrumentation]
+---
+ .../initramfs-framework/ostree                | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/recipes-core/initrdscripts/initramfs-framework/ostree b/recipes-core/initrdscripts/initramfs-framework/ostree
+index 1111111111..2222222222 100644
+--- a/recipes-core/initrdscripts/initramfs-framework/ostree
++++ b/recipes-core/initrdscripts/initramfs-framework/ostree
+@@ -8,8 +8,10 @@ ostree_enabled() {
+ ostree_run() {
+ 	if [ -n "$ROOTFS_DIR" ]; then
+ 		info "Preparing OSTree root at '$ROOTFS_DIR'..."
++		echo "BOOTDBG ostree-prepare-root start $(cat /proc/uptime)" > /dev/kmsg 2>/dev/null
+ 		/usr/lib/ostree/ostree-prepare-root $ROOTFS_DIR
++		echo "BOOTDBG ostree-prepare-root done $(cat /proc/uptime)" > /dev/kmsg 2>/dev/null
+ 	else
+ 		debug "No rootfs has been set"
+ 	fi
+ }
+--
+2.43.0

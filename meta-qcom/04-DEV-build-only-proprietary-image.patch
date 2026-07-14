@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000005 Mon Sep 17 00:00:00 2001
+From: Boot Debug <noreply@qti.qualcomm.com>
+Date: Mon, 30 Jun 2026 00:00:00 +0000
+Subject: [DEV] qcom-distro.yml: build only qcom-multimedia-proprietary-image
+
+Comments out the other three image targets (multimedia, container-
+orchestration, networking) from the kas target list so dev rebuilds only
+produce qcom-multimedia-proprietary-image. Drop this patch to restore the
+full four-image build.
+
+Upstream-Status: Inappropriate [local dev speedup]
+---
+diff --git a/ci/qcom-distro.yml b/ci/qcom-distro.yml
+index da4f5dbe..848c6805 100644
+--- a/ci/qcom-distro.yml
++++ b/ci/qcom-distro.yml
+@@ -52,7 +52,7 @@ local_conf_header:
+     SKIP_META_VIRT_SANITY_CHECK = "1"
+ 
+ target:
+-  - qcom-multimedia-image
++  # - qcom-multimedia-image            # disabled: build only proprietary image to speed up dev
+   - qcom-multimedia-proprietary-image
+-  - qcom-container-orchestration-image
+-  - qcom-networking-image
++  # - qcom-container-orchestration-image  # disabled
++  # - qcom-networking-image            # disabled

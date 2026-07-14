@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000010 Mon Sep 17 00:00:00 2001
+From: Boot Debug <noreply@qti.qualcomm.com>
+Date: Wed, 08 Jul 2026 00:00:00 +0000
+Subject: [DEBUG] ci/performance: enable boot-time ftrace on kernel cmdline
+
+Appends boot-time ftrace args to KERNEL_CMDLINE_EXTRA (flows into
+OSTREE_KERNEL_ARGS on qcom ostree targets, e.g. rb3gen2-core-kit) so
+tracing_on=1 from early boot with a 128M ring buffer that survives until
+login. The systemd/udev BOOTPROF trace_marker slices are written to the
+top-level trace_marker and land in this same buffer, alongside the runtime
+state events below, so a single trace capture has both markers and state on
+one timeline.
+
+Added args:
+  trace_clock=mono      align timestamps with CLOCK_MONOTONIC (UnitsLoad*)
+  trace_buf_size=128M   ring buffer, keep early events from being evicted
+  trace_event=sched:sched_switch,sched_wakeup,sched_waking,
+              sched_process_fork,sched_process_exec,sched_process_exit,
+              block:block_rq_issue,block_rq_complete,
+              power:cpu_idle,cpu_frequency
+              (scheduling incl. D/S blocked+sleep, block IO, cpu idle/freq)
+
+Read markers with: cat /sys/kernel/debug/tracing/trace | grep tracing_mark_write
+Open the full trace in ui.perfetto.dev for the visual timeline.
+
+Drop this entry from local-patches.yml to restore the stock cmdline.
+
+Upstream-Status: Inappropriate [local dev/debug]
+---
+diff --git a/ci/performance.yml b/ci/performance.yml
+index c3303684..526c486f 100644
+--- a/ci/performance.yml
++++ b/ci/performance.yml
+@@ -3,4 +3,4 @@ header:
+ 
+ local_conf_header:
+   cmdline-perf: |
+-    KERNEL_CMDLINE_EXTRA:append = " quiet systemd.tty.term.console=linux"
++    KERNEL_CMDLINE_EXTRA:append = " quiet systemd.tty.term.console=linux ftrace trace_clock=mono trace_buf_size=128M trace_event=sched:sched_switch,sched:sched_wakeup,sched:sched_waking,sched:sched_process_fork,sched:sched_process_exec,sched:sched_process_exit,block:block_rq_issue,block:block_rq_complete,power:cpu_idle,power:cpu_frequency"

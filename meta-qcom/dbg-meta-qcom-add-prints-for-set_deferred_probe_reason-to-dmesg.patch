@@ -1,0 +1,57 @@
+From 1f2be2e9fd6b715636b681be1474f855965148a3 Mon Sep 17 00:00:00 2001
+From: Chitti Babu Theegala <ctheegal@qti.qualcomm.com>
+Date: Wed, 20 May 2026 17:06:45 +0530
+Subject: add prints for set_deferred_probe_reason to dmesg
+
+---
+ ...obe_reason-for-driver-probe-failures.patch | 26 +++++++++++++++++++
+ recipes-kernel/linux/linux-qcom_6.18.bb       |  1 +
+ 2 files changed, 27 insertions(+)
+ create mode 100644 recipes-kernel/linux/linux-qcom-6.18/0001-set_defer_probe_reason-for-driver-probe-failures.patch
+
+diff --git a/recipes-kernel/linux/linux-qcom-6.18/0001-set_defer_probe_reason-for-driver-probe-failures.patch b/recipes-kernel/linux/linux-qcom-6.18/0001-set_defer_probe_reason-for-driver-probe-failures.patch
+new file mode 100644
+index 00000000..cc8cc44c
+--- /dev/null
++++ b/recipes-kernel/linux/linux-qcom-6.18/0001-set_defer_probe_reason-for-driver-probe-failures.patch
+@@ -0,0 +1,26 @@
++From d24955447776b773ec2643fd3a065cc4b1f6f2d2 Mon Sep 17 00:00:00 2001
++From: Chitti Babu Theegala <ctheegal@qti.qualcomm.com>
++Date: Tue, 19 May 2026 10:56:09 +0530
++Subject: set_defer_probe_reason for driver probe failures
++
++Upstream-Status: Inappropriate [Yocto specific]
++---
++ drivers/base/core.c | 2 +-
++ 1 file changed, 1 insertion(+), 1 deletion(-)
++
++diff --git a/drivers/base/core.c b/drivers/base/core.c
++index 3099dbca234a..480699360608 100644
++--- a/drivers/base/core.c
+++++ b/drivers/base/core.c
++@@ -5010,7 +5010,7 @@ static void __dev_probe_failed(const struct device *dev, int err, bool fatal,
++ 	switch (err) {
++ 	case -EPROBE_DEFER:
++ 		device_set_deferred_probe_reason(dev, &vaf);
++-		dev_dbg(dev, "error %pe: %pV", ERR_PTR(err), &vaf);
+++		dev_err(dev, "device_set_deferred_probe_reason: error %pe: %pV", ERR_PTR(err), &vaf);
++ 		break;
++ 
++ 	case -ENOMEM:
++-- 
++2.43.0
++
+diff --git a/recipes-kernel/linux/linux-qcom_6.18.bb b/recipes-kernel/linux/linux-qcom_6.18.bb
+index ed8a104e..a3ed0487 100644
+--- a/recipes-kernel/linux/linux-qcom_6.18.bb
++++ b/recipes-kernel/linux/linux-qcom_6.18.bb
+@@ -25,4 +25,5 @@ SRC_URI = " \
+     git://github.com/qualcomm-linux/kernel.git;${SRCBRANCH};protocol=https \
+     file://0001-tools-use-basename-to-identify-file-in-gen-mach-type.patch \
++    file://0001-set_defer_probe_reason-for-driver-probe-failures.patch \
+ "
+ 
+ # Additional kernel configs.
+-- 
+2.43.0
+

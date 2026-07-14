@@ -1,0 +1,25 @@
+From e910ea6047d5a4301a576699b87f170e37d7f7a5 Mon Sep 17 00:00:00 2001
+From: Chitti Babu Theegala <ctheegal@qti.qualcomm.com>
+Date: Wed, 20 May 2026 17:20:53 +0530
+Subject: initramfs udev-trigger limit to only block device
+
+Upstream-Status: Inappropriate [boot-time optimization]
+---
+ meta/recipes-core/initrdscripts/initramfs-framework/udev | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/meta/recipes-core/initrdscripts/initramfs-framework/udev b/meta/recipes-core/initrdscripts/initramfs-framework/udev
+index 4898b89246..3a9af2dc38 100644
+--- a/meta/recipes-core/initrdscripts/initramfs-framework/udev
++++ b/meta/recipes-core/initrdscripts/initramfs-framework/udev
+@@ -45,6 +45,6 @@ udev_run() {
+ 	sh -c "exec 4< /dev/console" || { exec 0> /dev/null; exec 1> /dev/null; exec 2> /dev/null; }
+ 
+ 	$_UDEV_DAEMON --daemon
+-	udevadm trigger --action=add
++	udevadm trigger --subsystem-match=block --action=add
+ 	udevadm settle
+ }
+-- 
+2.43.0
+

@@ -1,0 +1,22 @@
+From c5ba9429a0b78193bfa095047e9fa212ab712985 Mon Sep 17 00:00:00 2001
+From: Chitti Babu Theegala <ctheegal@qti.qualcomm.com>
+Date: Wed, 20 May 2026 16:55:16 +0530
+Subject: enable initcall_debug, systemd.log_level=debug
+
+---
+ ci/performance.yml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ci/performance.yml b/ci/performance.yml
+index c3303684..ab778501 100644
+--- a/ci/performance.yml
++++ b/ci/performance.yml
+@@ -3,4 +3,4 @@ header:
+
+ local_conf_header:
+   cmdline-perf: |
+-    KERNEL_CMDLINE_EXTRA:append = " quiet systemd.tty.term.console=linux"
++    KERNEL_CMDLINE_EXTRA:append = " systemd.tty.term.console=linux log_buf_len=12M systemd.log_level=debug systemd.log_target=kmsg"
+-- 
+2.43.0
+

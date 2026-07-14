@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000001 Mon Sep 17 00:00:00 2001
+From: Boot Debug <noreply@qti.qualcomm.com>
+Date: Mon, 30 Jun 2026 00:00:00 +0000
+Subject: [DEBUG] initramfs udev: limit trigger to block + /dev/kmsg timing
+ markers (udev + rootfs)
+
+Combines two changes that both touch the initramfs udev module (so they
+must live in one patch to avoid a context conflict):
+  1. udevadm trigger --action=add  ->  --subsystem-match=block --action=add
+     (the real boot-time optimization: only block devices are needed to
+      mount rootfs; avoids settling on the full QCS6490 device tree).
+  2. BOOTDBG /dev/kmsg markers around udev trigger/settle and the rootfs
+     mount/sleep loop, so the effect can be measured in dmesg.
+
+Drop this patch (and re-add the standalone 01/02) to revert.
+
+Upstream-Status: Inappropriate [debug instrumentation + boot opt]
+---
+diff --git a/meta/recipes-core/initrdscripts/initramfs-framework/rootfs b/meta/recipes-core/initrdscripts/initramfs-framework/rootfs
+index df0cbfb091..4b0f7832dc 100644
+--- a/meta/recipes-core/initrdscripts/initramfs-framework/rootfs
++++ b/meta/recipes-core/initrdscripts/initramfs-framework/rootfs
+@@ -7,6 +7,7 @@ rootfs_enabled() {
+ }
+ 
+ rootfs_run() {
++        echo "BOOTDBG rootfs_run start $(cat /proc/uptime)" > /dev/kmsg 2>/dev/null
+         if [ -z "$ROOTFS_DIR" ]; then
+ 		return
+         fi
+@@ -63,7 +64,10 @@ rootfs_run() {
+ 			fi
+ 		fi
+ 		debug "Sleeping for $delay second(s) to wait for root to settle..."
++		echo "BOOTDBG rootfs_run sleeping (root not ready) C=$C delay=$delay $(cat /proc/uptime)" > /dev/kmsg 2>/dev/null
+ 		sleep $delay
+ 		C=$(( $C + 1 ))
+ 	done
++
++	echo "BOOTDBG rootfs_run done (mounted) $(cat /proc/uptime)" > /dev/kmsg 2>/dev/null
+ }
+diff --git a/meta/recipes-core/initrdscripts/initramfs-framework/udev b/meta/recipes-core/initrdscripts/initramfs-framework/udev
+index 4898b89246..c0f8ac6d58 100644
+--- a/meta/recipes-core/initrdscripts/initramfs-framework/udev
++++ b/meta/recipes-core/initrdscripts/initramfs-framework/udev
+@@ -45,6 +45,9 @@ udev_run() {
+ 	sh -c "exec 4< /dev/console" || { exec 0> /dev/null; exec 1> /dev/null; exec 2> /dev/null; }
+ 
+ 	$_UDEV_DAEMON --daemon
+-	udevadm trigger --action=add
++	echo "BOOTDBG udev trigger start $(cat /proc/uptime)" > /dev/kmsg 2>/dev/null
++	udevadm trigger --subsystem-match=block --action=add
++	echo "BOOTDBG udev settle start $(cat /proc/uptime)" > /dev/kmsg 2>/dev/null
+ 	udevadm settle
++	echo "BOOTDBG udev settle done $(cat /proc/uptime)" > /dev/kmsg 2>/dev/null
+ }

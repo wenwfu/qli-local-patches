@@ -1,0 +1,112 @@
+From 8b91b2b7f3f91c29c1f7e5d8272b4bbbe8100001 Mon Sep 17 00:00:00 2001
+From: Wenfu Wen <wenwfu@qti.qualcomm.com>
+Date: Tue, 23 Jun 2026 17:00:00 +0800
+Subject: [PATCH] meta-qcom: disable rb3gen2 Type-C DP and eDP display paths
+
+Generate the kernel dts patch (disable DP/eDP/edp_phy + drop the DP sound
+DAI link) and wire it into the linux-qcom recipe SRC_URI. Disabling DP/eDP
+keeps them out of msm DRM component bind; dropping dp-dai-link prevents the
+ASoC sound card from hanging on the now-absent DP codec (which would stall
+dev-snd-controlC0.device and pipewire/wireplumber).
+
+---
+ ...-disable-typec-dp-edp.patch | 77 +++++
+ recipes-kernel/linux/linux-qcom_6.18.bb        |  1 +
+ 2 files changed
+ create mode 100644 recipes-kernel/linux/linux-qcom-6.18/0002-arm64-dts-qcom-qcs6490-rb3gen2-disable-typec-dp-edp.patch
+
+diff --git a/recipes-kernel/linux/linux-qcom-6.18/0002-arm64-dts-qcom-qcs6490-rb3gen2-disable-typec-dp-edp.patch b/recipes-kernel/linux/linux-qcom-6.18/0002-arm64-dts-qcom-qcs6490-rb3gen2-disable-typec-dp-edp.patch
+new file mode 100644
+index 00000000..10a0aa01
+--- /dev/null
++++ b/recipes-kernel/linux/linux-qcom-6.18/0002-arm64-dts-qcom-qcs6490-rb3gen2-disable-typec-dp-edp.patch
+@@ -0,0 +1,77 @@
++From 5b790d6c6f39bb84dc78118f1eec9fb2d9a00002 Mon Sep 17 00:00:00 2001
++From: Wenfu Wen <wenwfu@qti.qualcomm.com>
++Date: Tue, 23 Jun 2026 17:00:00 +0800
++Subject: [PATCH] arm64: dts: qcom: qcs6490-rb3gen2: disable Type-C DP and eDP
++
++Kodiak boots without a Type-C DP cable and without an eDP panel in the
++measured setup, but the ae90000 DP controller and the aea0000 eDP
++controller still participate in msm DRM component binding. Disable the
++Type-C DP controller, the eDP controller and the eDP PHY so these unused
++outputs do not block initial DRM component bind. The HDMI/LT9611 (DSI)
++path remains enabled.
++
++The DisplayPort0 sound DAI link references &mdss_dp as its codec; with the
++DP controller disabled that codec supplier is gone and the ASoC sound card
++(controlC0) fails to register, hanging dev-snd-controlC0.device and the
++pipewire/wireplumber chain that waits on it. Drop the dp-dai-link together
++with the DP controller so the sound card still registers (WSA/VA/MI2S/HDMI
++links remain).
++
++Upstream-Status: Inappropriate [boot-time validation for Kodiak setup]
++diff --git a/arch/arm64/boot/dts/qcom/qcs6490-rb3gen2.dts b/arch/arm64/boot/dts/qcom/qcs6490-rb3gen2.dts
++index ef4055f3b364..133ee3bd00c8 100644
++--- a/arch/arm64/boot/dts/qcom/qcs6490-rb3gen2.dts
+++++ b/arch/arm64/boot/dts/qcom/qcs6490-rb3gen2.dts
++@@ -937,7 +937,7 @@ &mdss {
++ };
++ 
++ &mdss_dp {
++-	status = "okay";
+++	status = "disabled";
++ };
++ 
++ &mdss_dp_out {
++@@ -961,7 +961,7 @@ &mdss_dsi_phy {
++ };
++ 
++ &mdss_edp {
++-	status = "okay";
+++	status = "disabled";
++ };
++ 
++ &mdss_edp_out {
++@@ -972,7 +972,7 @@ &mdss_edp_out {
++ };
++ 
++ &mdss_edp_phy {
++-	status = "okay";
+++	status = "disabled";
++ };
++ 
++ &pcie1 {
++@@ -1394,22 +1394,6 @@ platform {
++ 			sound-dai = <&q6apm>;
++ 		};
++ 	};
++-
++-	dp-dai-link {
++-		link-name = "DisplayPort0 Playback";
++-
++-		codec {
++-			sound-dai = <&mdss_dp>;
++-		};
++-
++-		cpu {
++-			sound-dai = <&q6apmbedai DISPLAY_PORT_RX_0>;
++-		};
++-
++-		platform {
++-			sound-dai = <&q6apm>;
++-		};
++-	};
++ };
++ 
++ &spi3 {
++--
++2.43.0
++
+diff --git a/recipes-kernel/linux/linux-qcom_6.18.bb b/recipes-kernel/linux/linux-qcom_6.18.bb
+index a3ed0487..1d1f5270 100644
+--- a/recipes-kernel/linux/linux-qcom_6.18.bb
++++ b/recipes-kernel/linux/linux-qcom_6.18.bb
+@@ -25,4 +25,5 @@ SRC_URI = " \
+     git://github.com/qualcomm-linux/kernel.git;${SRCBRANCH};protocol=https \
+     file://0001-tools-use-basename-to-identify-file-in-gen-mach-type.patch \
++    file://0002-arm64-dts-qcom-qcs6490-rb3gen2-disable-typec-dp-edp.patch \
+ "
+
+--
+2.43.0

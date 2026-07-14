@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000004 Mon Sep 17 00:00:00 2001
+From: Boot Debug <noreply@qti.qualcomm.com>
+Date: Mon, 30 Jun 2026 00:00:00 +0000
+Subject: [DEBUG] cmdline: set udev.children_max=12 to match QLI1.8
+
+QLI1.8 boots with udev.children_max=12 on the kernel cmdline, which lets
+systemd-udevd run up to 12 worker processes in parallel (incl. in the
+initramfs). The QLI2.0 cmdline does not set it, so udevd falls back to its
+default worker cap. This patch appends udev.children_max=12 so the
+initramfs "udevadm trigger + settle" stage can be compared against 1.8
+under the same parallelism.
+
+Upstream-Status: Inappropriate [boot-time experiment]
+---
+diff --git a/ci/performance.yml b/ci/performance.yml
+index c3303684..00a54ad1 100644
+--- a/ci/performance.yml
++++ b/ci/performance.yml
+@@ -3,4 +3,4 @@ header:
+ 
+ local_conf_header:
+   cmdline-perf: |
+-    KERNEL_CMDLINE_EXTRA:append = " quiet systemd.tty.term.console=linux"
++    KERNEL_CMDLINE_EXTRA:append = " quiet systemd.tty.term.console=linux udev.children_max=12"

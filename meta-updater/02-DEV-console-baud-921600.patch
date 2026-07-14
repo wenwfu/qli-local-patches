@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
+From: Boot Debug <noreply@qti.qualcomm.com>
+Date: Mon, 07 Jul 2026 00:00:00 +0000
+Subject: [DEV] sota_qcom: bump console baud to ttyMSM0,921600
+
+Changes the ostree kernel cmdline serial console from 115200 to 921600
+baud. This is the OSTREE_KERNEL_ARGS path used by the qcom ostree image
+targets (e.g. rb3gen2-core-kit), so the running kernel gets
+console=ttyMSM0,921600. Drop this patch to restore 115200.
+
+Note: this only affects the kernel console baud on the cmdline. The
+getty SERIAL_CONSOLES (meta-qcom, "115200;ttyMSM0") and the UKI /
+u-boot-fit KERNEL_CONSOLE path are unchanged; patch those separately if
+a matching userspace getty baud is required.
+
+Upstream-Status: Inappropriate [local dev/debug]
+---
+ classes/sota_qcom.bbclass | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/classes/sota_qcom.bbclass b/classes/sota_qcom.bbclass
+index 1111111..2222222 100644
+--- a/classes/sota_qcom.bbclass
++++ b/classes/sota_qcom.bbclass
+@@ -9,7 +9,7 @@ IMAGE_TYPEDEP:qcomflash += "ota-ext4 ota-esp"
+
+ # Handled by ostree
+ UKI_CMDLINE = ""
+-OSTREE_KERNEL_ARGS ?= "console=ttyMSM0,115200 ${OSTREE_KERNEL_ARGS_COMMON} ${KERNEL_CMDLINE_EXTRA}"
++OSTREE_KERNEL_ARGS ?= "console=ttyMSM0,921600 ${OSTREE_KERNEL_ARGS_COMMON} ${KERNEL_CMDLINE_EXTRA}"
+
+ # No custom esp image required
+ QCOM_ESP_IMAGE = ""

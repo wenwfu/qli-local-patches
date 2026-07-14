@@ -1,0 +1,769 @@
+From 0000000000000000000000000000000000000010 Mon Sep 17 00:00:00 2001
+From: Boot Debug <noreply@qti.qualcomm.com>
+Date: Wed, 08 Jul 2026 00:00:00 +0000
+Subject: [DEBUG] systemd: BOOTPROF markers (systemd-init/selinux-split/early-init-steps/udev)
+
+Adds 0100-DEBUG-bootprof-unit-load-timing.patch to the systemd recipe (SRC_URI).
+Adds instant init-step markers across the relabel-done -> generators window to
+pinpoint the ~162ms early-init wait, plus split selinux (policy-load / relabel),
+the systemd-init span, and udev event markers. Pure markers, no logic change.
+Requires qcom_bootprof SELinux allow rule + initramfs tracefs mount. Drop to
+restore stock.
+
+Upstream-Status: Inappropriate [debug instrumentation]
+---
+diff --git a/meta/recipes-core/systemd/systemd/0100-DEBUG-bootprof-unit-load-timing.patch b/meta/recipes-core/systemd/systemd/0100-DEBUG-bootprof-unit-load-timing.patch
+new file mode 100644
+index 0000000000..40e6eff223
+--- /dev/null
++++ b/meta/recipes-core/systemd/systemd/0100-DEBUG-bootprof-unit-load-timing.patch
+@@ -0,0 +1,737 @@
++From 0000000000000000000000000000000000000100 Mon Sep 17 00:00:00 2001
++From: Boot Debug <noreply@qti.qualcomm.com>
++Date: Wed, 08 Jul 2026 00:00:00 +0000
++Subject: [DEBUG] core+udev: BOOTPROF markers (systemd-init, selinux split, early-init steps, udev)
++
++Instrumentation only. src/shared/bootprof.{c,h} (libshared; PID1 + udevd)
++write Perfetto-compatible marker slices to the top-level trace_marker
++(retry-open, snprintf-safe, every-failure logging). Pure observation: no
++change to systemd/udev control flow.
++
++Slices/points (rootfs-only "systemd-init" span, main() start -> initial txn):
++  - selinux-policy-load        (main.c: mac_selinux_setup)
++  - selinux-relabel(/dev,/run) (mount-setup.c)
++  - init-step:{parse_configuration, apply_protect_system, collect_fds,
++    cg_has_legacy, dlopen_libmount, initialize_runtime, manager_new}
++    (instant markers to pinpoint the ~162ms wait between relabel and
++     generators; gap between consecutive markers = that step's cost)
++  - generators, unit-load {enumerate_perpetual, enumerate{enum:.<type>},
++    dispatch_load_queue}, coldplug
++  - udev: trigger / manager on_uevent / worker per-event begin+end
++
++log_info() BOOTPROF timing lines kept. Read markers: cat .../tracing/trace.
++Drop to restore stock.
++
++Upstream-Status: Inappropriate [debug instrumentation]
++---
++--- a/src/core/main.c
+++++ b/src/core/main.c
++@@ -22,6 +22,7 @@
++ #include "apparmor-setup.h"
++ #include "architecture.h"
++ #include "argv-util.h"
+++#include "bootprof.h"
++ #include "build.h"
++ #include "bus-error.h"
++ #include "capability-util.h"
++@@ -2926,7 +2927,9 @@ static int initialize_security(
++ 
++         dual_timestamp_now(security_start_timestamp);
++ 
+++        bootprof_begin("selinux-policy-load");   /* BOOTPROF trace */
++         r = mac_selinux_setup(loaded_policy);
+++        bootprof_end();   /* BOOTPROF trace: policy loaded */
++         if (r < 0) {
++                 *ret_error_message = "Failed to load SELinux policy";
++                 return r;
++@@ -3042,6 +3045,7 @@ int main(int argc, char *argv[]) {
++                                                                           * for the two that indicate whether
++                                                                           * these fields are initialized! */
++         bool skip_setup, loaded_policy = false, queue_default_job = false, first_boot = false;
+++        bool bootprof_init_marked = false;   /* BOOTPROF: systemd-init begin/end pairing */
++         char *switch_root_dir = NULL, *switch_root_init = NULL;
++         usec_t before_startup, after_startup;
++         static char systemd[] = "systemd";
++@@ -3061,6 +3065,15 @@ int main(int argc, char *argv[]) {
++          * reexecuting. */
++         skip_setup = early_skip_setup_check(argc, argv);
++ 
+++        /* BOOTPROF: open the systemd-init slice at the very start of main() in the
+++         * real rootfs (not initrd), before any setup work. It spans the whole
+++         * systemd-proper init and is closed after the initial transaction (or at
+++         * finish on early exit / before re-exec), keeping begin/end balanced. */
+++        if (!in_initrd()) {
+++                bootprof_begin("systemd-init");
+++                bootprof_init_marked = true;
+++        }
+++
++         /* If we get started via the /sbin/init symlink then we are called 'init'. After a subsequent
++          * reexecution we are then called 'systemd'. That is confusing, hence let's call us systemd
++          * right-away. */
++@@ -3219,6 +3232,12 @@ int main(int argc, char *argv[]) {
++         (void) reset_all_signal_handlers();
++         (void) ignore_signals(SIGNALS_IGNORE);
++ 
+++        /* BOOTPROF: instant markers through the relabel-done -> generators setup
+++         * sequence, to locate where the ~162ms early-init wait actually sits.
+++         * Instant (not begin/end) so no pairing is needed; the gap between two
+++         * consecutive markers is the cost of the step in between. Rootfs only. */
+++        if (!in_initrd())
+++                bootprof_instant("init-step:parse_configuration");
++         (void) parse_configuration(&saved_rlimit_nofile, &saved_rlimit_memlock);
++ 
++         r = parse_argv(argc, argv);
++@@ -3275,12 +3294,16 @@ int main(int argc, char *argv[]) {
++                 initialize_core_pattern(skip_setup);
++ 
++                 /* Make /usr/ read-only */
+++                if (!in_initrd())
+++                        bootprof_instant("init-step:apply_protect_system");
++                 apply_protect_system(skip_setup);
++ 
++                 /* Close logging fds, in order not to confuse collecting passed fds and terminal logic below */
++                 log_close();
++ 
++                 /* Remember open file descriptors for later deserialization */
+++                if (!in_initrd())
+++                        bootprof_instant("init-step:collect_fds");
++                 r = collect_fds(&fds, &error_message);
++                 if (r < 0)
++                         goto finish;
++@@ -3294,6 +3317,8 @@ int main(int argc, char *argv[]) {
++ 
++         log_execution_mode(&first_boot);
++ 
+++        if (!in_initrd())
+++                bootprof_instant("init-step:cg_has_legacy");
++         r = cg_has_legacy();
++         if (r < 0) {
++                 error_message = "Failed to check cgroup hierarchy";
++@@ -3312,12 +3337,16 @@ int main(int argc, char *argv[]) {
++         }
++ 
++         /* Building without libmount is allowed, but if it is compiled in, then we must be able to load it */
+++        if (!in_initrd())
+++                bootprof_instant("init-step:dlopen_libmount");
++         r = dlopen_libmount();
++         if (r < 0 && !ERRNO_IS_NEG_NOT_SUPPORTED(r)) {
++                 error_message = "Failed to load libmount.so";
++                 goto finish;
++         }
++ 
+++        if (!in_initrd())
+++                bootprof_instant("init-step:initialize_runtime");
++         r = initialize_runtime(skip_setup,
++                                first_boot,
++                                &saved_rlimit_nofile,
++@@ -3327,6 +3356,8 @@ int main(int argc, char *argv[]) {
++         if (r < 0)
++                 goto finish;
++ 
+++        if (!in_initrd())
+++                bootprof_instant("init-step:manager_new");
++         r = manager_new(arg_runtime_scope,
++                         arg_action == ACTION_TEST ? MANAGER_TEST_FULL : 0,
++                         &m);
++@@ -3374,6 +3405,14 @@ int main(int argc, char *argv[]) {
++ 
++         after_startup = now(CLOCK_MONOTONIC);
++ 
+++        /* BOOTPROF: end of the systemd initialization window (units loaded +
+++         * initial transaction determined). Pairs with the systemd-init begin;
+++         * the flag guarantees exact pairing even if begin was skipped. */
+++        if (bootprof_init_marked) {
+++                bootprof_end();
+++                bootprof_init_marked = false;
+++        }
+++
++         log_full(arg_action == ACTION_TEST ? LOG_INFO : LOG_DEBUG,
++                  "Loaded units and determined initial transaction in %s.",
++                  FORMAT_TIMESPAN(after_startup - before_startup, 100 * USEC_PER_MSEC));
++@@ -3403,6 +3442,14 @@ int main(int argc, char *argv[]) {
++                           MANAGER_SWITCH_ROOT)));
++ 
++ finish:
+++        /* BOOTPROF: if we jumped here after opening the systemd-init slice but
+++         * before closing it (early startup failure), close it now so the slice
+++         * stays balanced. */
+++        if (bootprof_init_marked) {
+++                bootprof_end();
+++                bootprof_init_marked = false;
+++        }
+++
++         pager_close();
++ 
++         if (m) {
++diff --git a/src/core/manager.c b/src/core/manager.c
++index a5a51023c5..32f8b6cb2d 100644
++--- a/src/core/manager.c
+++++ b/src/core/manager.c
++@@ -20,6 +20,7 @@
++ #include "architecture.h"
++ #include "audit-fd.h"
++ #include "boot-timestamps.h"
+++#include "bootprof.h"
++ #include "bpf-restrict-fs.h"
++ #include "build-path.h"
++ #include "bus-common-errors.h"
++@@ -80,6 +81,7 @@
++ #include "socket-util.h"
++ #include "special.h"
++ #include "stat-util.h"
+++#include "stdio-util.h"
++ #include "string-table.h"
++ #include "string-util.h"
++ #include "strv.h"
++@@ -1771,11 +1773,16 @@ Manager* manager_free(Manager *m) {
++ }
++ 
++ static void manager_enumerate_perpetual(Manager *m) {
+++        usec_t t0, t1;   /* BOOTPROF: unit-load timing */
+++
++         assert(m);
++ 
++         if (FLAGS_SET(m->test_run_flags, MANAGER_TEST_RUN_MINIMAL))
++                 return;
++ 
+++        t0 = now(CLOCK_MONOTONIC);   /* BOOTPROF */
+++        bootprof_begin("enumerate_perpetual");   /* BOOTPROF trace */
+++
++         /* Let's ask every type to load all units from disk/kernel that it might know */
++         for (UnitType c = 0; c < _UNIT_TYPE_MAX; c++) {
++                 if (!unit_type_supported(c)) {
++@@ -1786,14 +1793,23 @@ static void manager_enumerate_perpetual(Manager *m) {
++                 if (unit_vtable[c]->enumerate_perpetual)
++                         unit_vtable[c]->enumerate_perpetual(m);
++         }
+++
+++        bootprof_end();   /* BOOTPROF trace */
+++        t1 = now(CLOCK_MONOTONIC);   /* BOOTPROF */
+++        log_info("BOOTPROF: enumerate_perpetual took %s", FORMAT_TIMESPAN(t1 - t0, 0));
++ }
++ 
++ static void manager_enumerate(Manager *m) {
+++        usec_t t_start, t_last, t_now;   /* BOOTPROF: unit-load timing */
+++
++         assert(m);
++ 
++         if (FLAGS_SET(m->test_run_flags, MANAGER_TEST_RUN_MINIMAL))
++                 return;
++ 
+++        t_start = t_last = now(CLOCK_MONOTONIC);   /* BOOTPROF */
+++        bootprof_begin("enumerate");   /* BOOTPROF trace */
+++
++         /* Let's ask every type to load all units from disk/kernel that it might know */
++         for (UnitType c = 0; c < _UNIT_TYPE_MAX; c++) {
++                 if (!unit_type_supported(c)) {
++@@ -1801,11 +1817,30 @@ static void manager_enumerate(Manager *m) {
++                         continue;
++                 }
++ 
++-                if (unit_vtable[c]->enumerate)
+++                if (unit_vtable[c]->enumerate) {
+++                        char _bp[64];   /* BOOTPROF: per-type slice name */
+++                        (void) snprintf(_bp, sizeof(_bp), "enum:.%s", unit_type_to_string(c));
+++                        bootprof_begin(_bp);   /* BOOTPROF trace */
++                         unit_vtable[c]->enumerate(m);
+++                        bootprof_end();   /* BOOTPROF trace */
+++                        /* BOOTPROF: per-type enumerate cost (all types, no threshold) */
+++                        t_now = now(CLOCK_MONOTONIC);
+++                        log_info("BOOTPROF: enumerate .%s took %s",
+++                                 unit_type_to_string(c), FORMAT_TIMESPAN(t_now - t_last, 0));
+++                        t_last = t_now;
+++                }
++         }
++ 
+++        bootprof_end();   /* BOOTPROF trace: end "enumerate" */
+++        t_now = now(CLOCK_MONOTONIC);   /* BOOTPROF */
+++        log_info("BOOTPROF: all enumerate() callbacks took %s", FORMAT_TIMESPAN(t_now - t_start, 0));
+++
+++        t_last = t_now;
+++        bootprof_begin("dispatch_load_queue");   /* BOOTPROF trace */
++         manager_dispatch_load_queue(m);
+++        bootprof_end();   /* BOOTPROF trace */
+++        t_now = now(CLOCK_MONOTONIC);   /* BOOTPROF */
+++        log_info("BOOTPROF: dispatch_load_queue (parse+deps) took %s", FORMAT_TIMESPAN(t_now - t_last, 0));
++ }
++ 
++ static void manager_coldplug(Manager *m) {
++@@ -2019,9 +2054,11 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds, const char *roo
++                 return r;
++ 
++         dual_timestamp_now(m->timestamps + manager_timestamp_initrd_mangle(MANAGER_TIMESTAMP_GENERATORS_START));
+++        bootprof_begin("generators");   /* BOOTPROF trace */
++         r = manager_run_environment_generators(m);
++         if (r >= 0)
++                 r = manager_run_generators(m);
+++        bootprof_end();   /* BOOTPROF trace */
++         dual_timestamp_now(m->timestamps + manager_timestamp_initrd_mangle(MANAGER_TIMESTAMP_GENERATORS_FINISH));
++         if (r < 0)
++                 return r;
++@@ -2045,8 +2082,10 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds, const char *roo
++ 
++                 /* First, enumerate what we can from all config files */
++                 dual_timestamp_now(m->timestamps + manager_timestamp_initrd_mangle(MANAGER_TIMESTAMP_UNITS_LOAD_START));
+++                bootprof_begin("unit-load");   /* BOOTPROF trace: whole UnitsLoad window */
++                 manager_enumerate_perpetual(m);
++                 manager_enumerate(m);
+++                bootprof_end();   /* BOOTPROF trace */
++                 dual_timestamp_now(m->timestamps + manager_timestamp_initrd_mangle(MANAGER_TIMESTAMP_UNITS_LOAD_FINISH));
++ 
++                 /* Second, deserialize if there is something to deserialize */
++@@ -2104,7 +2143,9 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds, const char *roo
++                         log_warning_errno(r, "Failed to set up Varlink, ignoring: %m");
++ 
++                 /* Third, fire things up! */
+++                bootprof_begin("coldplug");   /* BOOTPROF trace */
++                 manager_coldplug(m);
+++                bootprof_end();   /* BOOTPROF trace */
++ 
++                 /* Clean up runtime objects */
++                 manager_vacuum(m);
++@@ -2356,6 +2397,25 @@ unsigned manager_dispatch_load_queue(Manager *m) {
++ 
++         m->dispatching_load_queue = false;
++ 
+++        /* BOOTPROF: report parse work only for passes that actually loaded units,
+++         * with the unit_load() sub-phase split (vtable->load = file read+parse,
+++         * add_deps = dependency graph build). Skips the noisy n==0 passes. */
+++        if (n > 0) {
+++                log_info("BOOTPROF: dispatch_load_queue parsed %u units | vtable_load(parse)=%s add_deps=%s (cumulative over %u units)",
+++                         n,
+++                         FORMAT_TIMESPAN(bootprof_vtable_load_usec, 0),
+++                         FORMAT_TIMESPAN(bootprof_add_deps_usec, 0),
+++                         bootprof_units_loaded);
+++                log_info("BOOTPROF:   vtable_load split: fragment(file find+parse)=%s dropin=%s",
+++                         FORMAT_TIMESPAN(bootprof_fragment_usec, 0),
+++                         FORMAT_TIMESPAN(bootprof_dropin_usec, 0));
+++                log_info("BOOTPROF:   add_deps split: slice=%s mount=%s oomd=%s startup=%s",
+++                         FORMAT_TIMESPAN(bootprof_dep_slice_usec, 0),
+++                         FORMAT_TIMESPAN(bootprof_dep_mount_usec, 0),
+++                         FORMAT_TIMESPAN(bootprof_dep_oomd_usec, 0),
+++                         FORMAT_TIMESPAN(bootprof_dep_startup_usec, 0));
+++        }
+++
++         /* Dispatch the units waiting for their target dependencies to be added now, as all targets that we know about
++          * should be loaded and have aliases resolved */
++         (void) manager_dispatch_target_deps_queue(m);
++diff --git a/src/core/unit.c b/src/core/unit.c
++index 6580772b67..d6d99b5d16 100644
++--- a/src/core/unit.c
+++++ b/src/core/unit.c
++@@ -152,6 +152,20 @@ bool unit_has_name(const Unit *u, const char *name) {
++                set_contains(u->aliases, name);
++ }
++ 
+++/* BOOTPROF: accumulators for unit_load() sub-phase timing, summed across the
+++ * whole dispatch_load_queue pass and reported once in manager.c. */
+++usec_t bootprof_vtable_load_usec = 0;   /* UNIT_VTABLE->load() total */
+++usec_t bootprof_add_deps_usec = 0;      /* unit_add_*_dependencies total */
+++unsigned bootprof_units_loaded = 0;
+++/* vtable->load sub-split (fragment types via unit_load_fragment_and_dropin) */
+++usec_t bootprof_fragment_usec = 0;      /* unit_load_fragment (find+parse file) */
+++usec_t bootprof_dropin_usec = 0;        /* unit_load_dropin (drop-in scan+parse) */
+++/* add_deps sub-split */
+++usec_t bootprof_dep_slice_usec = 0;
+++usec_t bootprof_dep_mount_usec = 0;
+++usec_t bootprof_dep_oomd_usec = 0;
+++usec_t bootprof_dep_startup_usec = 0;
+++
++ static void unit_init(Unit *u) {
++         CGroupContext *cc;
++         ExecContext *ec;
++@@ -1418,12 +1432,16 @@ const char* unit_status_string(Unit *u, char **ret_combined_buffer) {
++ 
++ /* Common implementation for multiple backends */
++ int unit_load_fragment_and_dropin(Unit *u, bool fragment_required) {
+++        usec_t _bp_a, _bp_b, _bp_c;   /* BOOTPROF */
++         int r;
++ 
++         assert(u);
++ 
++         /* Load a .{service,socket,...} file */
+++        _bp_a = now(CLOCK_MONOTONIC);   /* BOOTPROF */
++         r = unit_load_fragment(u);
+++        _bp_b = now(CLOCK_MONOTONIC);   /* BOOTPROF */
+++        bootprof_fragment_usec += _bp_b - _bp_a;   /* BOOTPROF: fragment file find+parse */
++         if (r < 0)
++                 return r;
++ 
++@@ -1443,7 +1461,10 @@ int unit_load_fragment_and_dropin(Unit *u, bool fragment_required) {
++          * target unit needlessly. But we cannot be sure which drops-ins have already
++          * been loaded and which not, at least without doing complicated book-keeping,
++          * so let's always reread all drop-ins. */
+++        _bp_b = now(CLOCK_MONOTONIC);   /* BOOTPROF: re-stamp (skip masked/stub early returns above) */
++         r = unit_load_dropin(u);
+++        _bp_c = now(CLOCK_MONOTONIC);   /* BOOTPROF */
+++        bootprof_dropin_usec += _bp_c - _bp_b;   /* BOOTPROF: drop-in scan+parse */
++         if (r < 0)
++                 return r;
++ 
++@@ -1667,6 +1688,7 @@ static int unit_validate_on_termination_job_modes(Unit *u) {
++ }
++ 
++ int unit_load(Unit *u) {
+++        usec_t _bp_t0, _bp_t1, _bp_t2;   /* BOOTPROF */
++         int r;
++ 
++         assert(u);
++@@ -1694,28 +1716,46 @@ int unit_load(Unit *u) {
++                 u->fragment_mtime = now(CLOCK_REALTIME);
++         }
++ 
+++        _bp_t0 = now(CLOCK_MONOTONIC);   /* BOOTPROF */
++         r = UNIT_VTABLE(u)->load(u);
+++        _bp_t1 = now(CLOCK_MONOTONIC);   /* BOOTPROF */
+++        bootprof_vtable_load_usec += _bp_t1 - _bp_t0;   /* BOOTPROF: file read + parse */
+++        bootprof_units_loaded++;
++         if (r < 0)
++                 goto fail;
++ 
++         assert(u->load_state != UNIT_STUB);
++ 
++         if (u->load_state == UNIT_LOADED) {
+++                usec_t _bp_d0, _bp_d1;   /* BOOTPROF: per-dep-type timing */
+++
++                 unit_add_to_target_deps_queue(u);
++ 
+++                _bp_d0 = now(CLOCK_MONOTONIC);
++                 r = unit_add_slice_dependencies(u);
+++                _bp_d1 = now(CLOCK_MONOTONIC);
+++                bootprof_dep_slice_usec += _bp_d1 - _bp_d0;   /* BOOTPROF */
++                 if (r < 0)
++                         goto fail;
++ 
+++                _bp_d0 = now(CLOCK_MONOTONIC);
++                 r = unit_add_mount_dependencies(u);
+++                _bp_d1 = now(CLOCK_MONOTONIC);
+++                bootprof_dep_mount_usec += _bp_d1 - _bp_d0;   /* BOOTPROF */
++                 if (r < 0)
++                         goto fail;
++ 
+++                _bp_d0 = now(CLOCK_MONOTONIC);
++                 r = unit_add_oomd_dependencies(u);
+++                _bp_d1 = now(CLOCK_MONOTONIC);
+++                bootprof_dep_oomd_usec += _bp_d1 - _bp_d0;   /* BOOTPROF */
++                 if (r < 0)
++                         goto fail;
++ 
+++                _bp_d0 = now(CLOCK_MONOTONIC);
++                 r = unit_add_startup_units(u);
+++                _bp_d1 = now(CLOCK_MONOTONIC);
+++                bootprof_dep_startup_usec += _bp_d1 - _bp_d0;   /* BOOTPROF */
++                 if (r < 0)
++                         goto fail;
++ 
++@@ -1729,6 +1769,8 @@ int unit_load(Unit *u) {
++                 /* We finished loading, let's ensure our parents recalculate the members mask */
++                 unit_invalidate_cgroup_members_masks(u);
++         }
+++        _bp_t2 = now(CLOCK_MONOTONIC);   /* BOOTPROF */
+++        bootprof_add_deps_usec += _bp_t2 - _bp_t1;   /* BOOTPROF: dependency graph build */
++ 
++         assert((u->load_state != UNIT_MERGED) == !u->merged_into);
++ 
++diff --git a/src/core/unit.h b/src/core/unit.h
++index bad7edde6a..9647075cac 100644
++--- a/src/core/unit.h
+++++ b/src/core/unit.h
++@@ -868,6 +868,17 @@ Unit *unit_follow_merge(Unit *u) _pure_;
++ int unit_load_fragment_and_dropin(Unit *u, bool fragment_required);
++ int unit_load(Unit *unit);
++ 
+++/* BOOTPROF: unit_load() sub-phase accumulators (defined in unit.c) */
+++extern usec_t bootprof_vtable_load_usec;
+++extern usec_t bootprof_add_deps_usec;
+++extern unsigned bootprof_units_loaded;
+++extern usec_t bootprof_fragment_usec;
+++extern usec_t bootprof_dropin_usec;
+++extern usec_t bootprof_dep_slice_usec;
+++extern usec_t bootprof_dep_mount_usec;
+++extern usec_t bootprof_dep_oomd_usec;
+++extern usec_t bootprof_dep_startup_usec;
+++
++ int unit_set_slice(Unit *u, Unit *slice);
++ int unit_set_default_slice(Unit *u);
++ 
++diff --git a/src/shared/bootprof.c b/src/shared/bootprof.c
++new file mode 100644
++index 0000000000..daff575eec
++--- /dev/null
+++++ b/src/shared/bootprof.c
++@@ -0,0 +1,110 @@
+++/* SPDX-License-Identifier: LGPL-2.1-or-later */
+++/* BOOTPROF: ftrace trace_marker instrumentation for the systemd startup main
+++ * path and udev event processing. Instrumentation only -- drop the
+++ * local-patches entry to remove.
+++ *
+++ * Writes Perfetto-compatible markers to the top-level trace_marker:
+++ *   B|<pid>|<name>   begin a slice
+++ *   E|<pid>          end the innermost slice
+++ *   I|<pid>|<name>   instant event
+++ * These render as nested slices in the Perfetto UI, on the writing pid's
+++ * track, aligned with sched/block/power events on the same timeline.
+++ *
+++ * Writing tracefs from systemd (init_t) / udevd (udev_t) requires an SELinux
+++ * allow rule (see the qcom_bootprof refpolicy module in local-patches); with
+++ * SELinux enforcing and no such rule, the writes are denied and silently
+++ * dropped.
+++ *
+++ * All operations are best-effort: the fd is opened lazily and, on failure, is
+++ * retried on the next marker (failure is never latched), so an early-boot
+++ * open failure does not disable markers for the rest of the process lifetime.
+++ * If tracefs is unavailable the writes are silently skipped and boot is
+++ * unaffected. */
+++
+++#include <errno.h>
+++#include <fcntl.h>
+++#include <unistd.h>
+++
+++#include "bootprof.h"
+++#include "fd-util.h"
+++#include "fileio.h"
+++#include "format-util.h"
+++#include "log.h"
+++#include "process-util.h"
+++#include "stdio-util.h"
+++
+++/* tracefs (preferred) and debugfs fallback trace_marker paths. */
+++#define BOOTPROF_MARKER_TRACEFS "/sys/kernel/tracing/trace_marker"
+++#define BOOTPROF_MARKER_DEBUGFS "/sys/kernel/debug/tracing/trace_marker"
+++
+++static int bootprof_marker_fd = -EBADF;
+++
+++static int bootprof_fd(void) {
+++        /* Retry until we succeed: do NOT latch failure. In early boot the first
+++         * open can fail (tracefs timing), and a one-shot latch would then
+++         * disable markers for this process' entire lifetime -- exactly the
+++         * first-boot pid 1 window we care about. So we cache only a SUCCESSFUL
+++         * fd; on failure we fall through and try again on the next marker. */
+++        if (bootprof_marker_fd >= 0)
+++                return bootprof_marker_fd;
+++
+++        /* Prefer the tracefs mount, fall back to the debugfs path. O_CLOEXEC so
+++         * the fd is not leaked into forked children. */
+++        bootprof_marker_fd = open(BOOTPROF_MARKER_TRACEFS, O_WRONLY|O_CLOEXEC|O_NOCTTY);
+++        if (bootprof_marker_fd < 0)
+++                bootprof_marker_fd = open(BOOTPROF_MARKER_DEBUGFS, O_WRONLY|O_CLOEXEC|O_NOCTTY);
+++
+++        /* BOOTPROF: surface why markers are missing. Logged on EVERY failure
+++         * (log_warning_errno, not log_once) so each failed attempt is visible;
+++         * note this can be very verbose on the boot hot path when writes are
+++         * persistently denied. errno tells the story: EACCES = SELinux denial
+++         * (need the qcom_bootprof allow rule), ENOENT = tracefs not mounted. */
+++        if (bootprof_marker_fd < 0)
+++                log_warning_errno(errno,
+++                                  "BOOTPROF: failed to open trace_marker (%s / %s): %m",
+++                                  BOOTPROF_MARKER_TRACEFS, BOOTPROF_MARKER_DEBUGFS);
+++
+++        return bootprof_marker_fd;
+++}
+++
+++static void bootprof_write(const char *s) {
+++        int fd;
+++
+++        fd = bootprof_fd();
+++        if (fd < 0)
+++                return;
+++
+++        /* Report every write error (verbose by design). A denied write here
+++         * (EACCES) means the fd opened but SELinux blocks writes -- again the
+++         * qcom_bootprof allow rule. */
+++        if (write(fd, s, strlen(s)) < 0)
+++                log_warning_errno(errno,
+++                                  "BOOTPROF: failed to write trace_marker: %m");
+++}
+++
+++void bootprof_begin(const char *name) {
+++        char buf[320];
+++
+++        assert(name);
+++        /* snprintf (truncating), NOT xsprintf: name may be up to caller's buffer
+++         * size (e.g. 256); with the "B|<pid>|" prefix it could exceed the buffer,
+++         * and xsprintf would assert and abort the process. Truncation is fine for
+++         * a diagnostic marker; aborting a udev worker here would break boot. */
+++        (void) snprintf(buf, sizeof(buf), "B|" PID_FMT "|%s", getpid_cached(), name);
+++        bootprof_write(buf);
+++}
+++
+++void bootprof_end(void) {
+++        char buf[64];
+++
+++        (void) snprintf(buf, sizeof(buf), "E|" PID_FMT, getpid_cached());
+++        bootprof_write(buf);
+++}
+++
+++void bootprof_instant(const char *name) {
+++        char buf[320];
+++
+++        assert(name);
+++        (void) snprintf(buf, sizeof(buf), "I|" PID_FMT "|%s", getpid_cached(), name);
+++        bootprof_write(buf);
+++}
++diff --git a/src/shared/bootprof.h b/src/shared/bootprof.h
++new file mode 100644
++index 0000000000..f1f4bb15eb
++--- /dev/null
+++++ b/src/shared/bootprof.h
++@@ -0,0 +1,10 @@
+++/* SPDX-License-Identifier: LGPL-2.1-or-later */
+++#pragma once
+++
+++/* BOOTPROF: ftrace trace_marker helpers for startup main-path profiling.
+++ * Perfetto-compatible slices; best-effort, no-op if tracefs is unavailable.
+++ * Instrumentation only. */
+++
+++void bootprof_begin(const char *name);   /* B|pid|name */
+++void bootprof_end(void);                 /* E|pid      */
+++void bootprof_instant(const char *name); /* I|pid|name */
++diff --git a/src/shared/meson.build b/src/shared/meson.build
++index e0b86e0b81..636da3f27e 100644
++--- a/src/shared/meson.build
+++++ b/src/shared/meson.build
++@@ -4,6 +4,7 @@ shared_sources = files(
++         'acl-util.c',
++         'acpi-fpdt.c',
++         'apparmor-util.c',
+++        'bootprof.c',
++         'ask-password-agent.c',
++         'ask-password-api.c',
++         'async.c',
++diff --git a/src/shared/mount-setup.c b/src/shared/mount-setup.c
++index b044c16195..ce61927b89 100644
++--- a/src/shared/mount-setup.c
+++++ b/src/shared/mount-setup.c
++@@ -4,6 +4,7 @@
++ #include <unistd.h>
++ 
++ #include "alloc-util.h"
+++#include "bootprof.h"
++ #include "conf-files.h"
++ #include "dev-setup.h"
++ #include "efivars.h"
++@@ -491,10 +492,12 @@ int mount_setup(bool loaded_policy, bool leave_propagation) {
++ 
++                 before_relabel = now(CLOCK_MONOTONIC);
++ 
+++                bootprof_begin("selinux-relabel(/dev,/run)");   /* BOOTPROF trace */
++                 FOREACH_STRING(i, "/dev", "/dev/shm", "/run")
++                         (void) relabel_tree(i);
++ 
++                 n_extra = relabel_extra();
+++                bootprof_end();   /* BOOTPROF trace: relabel done */
++ 
++                 after_relabel = now(CLOCK_MONOTONIC);
++ 
++diff --git a/src/udev/udev-manager.c b/src/udev/udev-manager.c
++index 6d9da33e49..3ff8223ff6 100644
++--- a/src/udev/udev-manager.c
+++++ b/src/udev/udev-manager.c
++@@ -6,6 +6,7 @@
++ 
++ #include "sd-varlink.h"
++ 
+++#include "bootprof.h"
++ #include "cgroup-util.h"
++ #include "common-signal.h"
++ #include "daemon-util.h"
++@@ -28,6 +29,7 @@
++ #include "set.h"
++ #include "signal-util.h"
++ #include "socket-util.h"
+++#include "stdio-util.h"
++ #include "string-util.h"
++ #include "strv.h"
++ #include "time-util.h"
++@@ -1083,6 +1085,22 @@ static int on_uevent(sd_device_monitor *monitor, sd_device *dev, void *userdata)
++ 
++         DEVICE_TRACE_POINT(kernel_uevent_received, dev);
++ 
+++        /* BOOTPROF: mark each uevent arriving at the udevd manager (before it is
+++         * queued and handed to a worker). Instant event on the manager pid.
+++         * snprintf (truncating), NOT xsprintf -- must never abort on long names. */
+++        if (true) {
+++                char _bp[256];
+++                const char *_bp_n = NULL, *_bp_s = NULL;
+++                sd_device_action_t _bp_a = _SD_DEVICE_ACTION_INVALID;
+++                (void) sd_device_get_action(dev, &_bp_a);
+++                (void) sd_device_get_sysname(dev, &_bp_n);
+++                (void) sd_device_get_subsystem(dev, &_bp_s);
+++                (void) snprintf(_bp, sizeof(_bp), "uevent-recv:%s %s/%s",
+++                                strempty(device_action_to_string(_bp_a)),
+++                                strempty(_bp_s), strempty(_bp_n));
+++                bootprof_instant(_bp);   /* BOOTPROF trace */
+++        }
+++
++         (void) manager_create_queue_file(manager);
++ 
++         device_ensure_usec_initialized(dev, NULL);
++diff --git a/src/udev/udev-worker.c b/src/udev/udev-worker.c
++index 67617203d7..e053c8b6bd 100644
++--- a/src/udev/udev-worker.c
+++++ b/src/udev/udev-worker.c
++@@ -9,6 +9,7 @@
++ #include "sd-netlink.h"
++ 
++ #include "blockdev-util.h"
+++#include "bootprof.h"
++ #include "device-monitor-private.h"
++ #include "device-private.h"
++ #include "device-util.h"
++@@ -17,6 +18,8 @@
++ #include "fd-util.h"
++ #include "hashmap.h"
++ #include "process-util.h"
+++#include "stdio-util.h"
+++#include "string-util.h"
++ #include "udev-error.h"
++ #include "udev-event.h"
++ #include "udev-rules.h"
++@@ -283,7 +286,27 @@ static int worker_device_monitor_handler(sd_device_monitor *monitor, sd_device *
++         assert(monitor);
++         assert(dev);
++ 
+++        /* BOOTPROF: mark the whole per-event processing on this worker. The
+++         * slice name carries the action + sysname so events are distinguishable
+++         * in the Perfetto UI; each worker is a separate pid track. Use snprintf
+++         * (truncating, never aborts) -- NOT xsprintf, which asserts on overflow
+++         * and would crash the worker on long sysnames, breaking event handling
+++         * (incl. block by-label symlinks needed to mount rootfs). */
+++        char _bp[256];
+++        const char *_bp_name = NULL, *_bp_subsys = NULL;
+++        sd_device_action_t _bp_act = _SD_DEVICE_ACTION_INVALID;
+++        (void) sd_device_get_action(dev, &_bp_act);
+++        (void) sd_device_get_sysname(dev, &_bp_name);
+++        (void) sd_device_get_subsystem(dev, &_bp_subsys);
+++        (void) snprintf(_bp, sizeof(_bp), "udev-event:%s %s/%s",
+++                        strempty(device_action_to_string(_bp_act)),
+++                        strempty(_bp_subsys), strempty(_bp_name));
+++        bootprof_begin(_bp);   /* BOOTPROF trace */
+++
++         r = worker_process_device(worker, dev);
+++
+++        bootprof_end();   /* BOOTPROF trace */
+++
++         if (r < 0) {
++                 log_device_warning_errno(dev, r, "Failed to process device, ignoring: %m");
++                 (void) device_add_errno(dev, r);
++diff --git a/src/udev/udevadm-trigger.c b/src/udev/udevadm-trigger.c
++index b7a916b719..5bf6cb3ba8 100644
++--- a/src/udev/udevadm-trigger.c
+++++ b/src/udev/udevadm-trigger.c
++@@ -7,6 +7,7 @@
++ #include "sd-event.h"
++ 
++ #include "alloc-util.h"
+++#include "bootprof.h"
++ #include "device-enumerator-private.h"
++ #include "device-private.h"
++ #include "device-util.h"
++@@ -98,6 +99,7 @@ static int exec_list(
++                         continue;
++ 
++                 sd_id128_t id;
+++                bootprof_instant(syspath);   /* BOOTPROF trace: each triggered uevent */
++                 r = sd_device_trigger_with_uuid(d, action, &id);
++                 if (r < 0) {
++                         /* ENOENT may be returned when a device does not have /uevent or is already
+diff --git a/meta/recipes-core/systemd/systemd_259.5.bb b/meta/recipes-core/systemd/systemd_259.5.bb
+index f3ec0edae7..d482e81550 100644
+--- a/meta/recipes-core/systemd/systemd_259.5.bb
++++ b/meta/recipes-core/systemd/systemd_259.5.bb
+@@ -35,6 +35,7 @@ SRC_URI += " \
+            file://0001-meson-use-libfido2_cflags-dependency.patch \
+            file://0018-shared-fdset-add-detailed-debug-logging-to-fdset_new.patch \
+            file://0004-tpm2-util-fix-PCR-bank-guessing-without-EFI.patch \
++           file://0100-DEBUG-bootprof-unit-load-timing.patch \
+            "
+ 
+ PAM_PLUGINS = " \

@@ -1,0 +1,147 @@
+# Local patch overlay — kept out of the upstream-generated buildconf lock so
+# that lock stays pristine across nightly syncs. Both this declaration file and
+# the patch FILES live under the workspace-root local-patches/ directory, so
+# nothing is stored inside an upstream repo (meta-qcom, oe-core, ...) and they
+# survive upstream updates.
+#
+# The patch files are exposed through the url-less "local-patches" repo below
+# (a plain directory). With no url kas performs no version-control operations
+# on it; the patch entries are deep-merged onto the repos defined by the
+# included buildconf lock.
+#
+# The upstream mariadb patch is intentionally NOT listed here — it ships in the
+# buildconf lock itself; duplicating it would apply it twice and fail.
+#
+# This file INCLUDES the buildconf lock directly (rather than being colon-
+# concatenated with it on the command line) because kas forbids concatenating
+# top-level config files from different repos: the lock lives in the
+# meta-qcom-buildconf git repo while this file sits in the (non-VCS) workspace.
+# An include is not a top-level file, so that check does not apply. The include
+# path is file-relative to this file (one level up into the workspace root);
+# kas emits a harmless "Falling back to file-relative addressing" warning.
+header:
+  version: 14
+  includes:
+    - ../meta-qcom-buildconf/lock.yml
+repos:
+  # url-less local repo: a plain patch container. With no url kas performs no
+  # version-control operations on it, and "." disabled keeps it out of bblayers.
+  # path is relative to the kas work dir (workspace root), not to this file.
+  local-patches:
+    path: local-patches
+    layers:
+      .: disabled
+  meta-audioreach:
+    patches:
+      plain:
+        repo: local-patches
+        path: meta-audioreach/0001-boot-time-optimizations-apm-timeout-and-snd-card-retry.patch
+  meta-qcom-distro:
+    patches:
+      # QuickBoot early-boot optimizations: adds quickboot-audio/camera/display
+      # recipes under recipes-support/quickboot/ (sources fetched from
+      # github.com/wenwfu/quickboot, branch multi-target, pinned SRCREV) and
+      # wires the three packages into qcom-multimedia-image per machine
+      # (iq-9075-evk, rb3gen2-core-kit). Drop to remove quickboot from the image.
+      quickboot-recipes:
+        repo: local-patches
+        path: meta-qcom-distro/0001-meta-qcom-distro-add-quickboot-recipes.patch
+  oe-core:
+    patches:
+      # BOOTPROF: instrument systemd unit load/parse phase (manager.c
+      # enumerate + dispatch_load_queue) with per-phase timing logs to
+      # /dev/kmsg (visible in dmesg). Splits UnitsLoadStart..UnitsLoadFinish
+      # into per-type enumerate() vs unit-file parse+deps. Drop to restore
+      # stock systemd. Read results with: dmesg | grep BOOTPROF
+      bootprof-unit-load:
+        repo: local-patches
+        path: oe-core/10-DEBUG-bootprof-unit-load-manager.patch
+      # Mount tracefs in the initramfs (right after /sys) so it rides
+      # `mount --move /sys` onto the rootfs and is already present when systemd
+      # writes trace_marker during unit-load (~3.5s) -- before systemd's own
+      # sys-kernel-tracing.mount (~3.85s). Without this the earliest markers are
+      # lost. Pairs with bootprof-unit-load + selinux-allow-bootprof-tracefs.
+      initramfs-mount-tracefs-early:
+        repo: local-patches
+        path: oe-core/11-DEBUG-initramfs-mount-tracefs-early.patch
+      # Boot-time opt: limit the initramfs udevadm trigger to block devices
+      # (udevadm trigger --action=add -> --subsystem-match=block --action=add),
+      # so the initramfs udev settle only waits on block devices (needed for
+      # rootfs) instead of the whole device tree. Drop to restore full trigger.
+      initramfs-udev-block-only:
+        repo: local-patches
+        path: oe-core/01-oe-core-initramfs-udev-trigger-limit-to-only-block-device.patch
+      # MEASUREMENT RUN: enable block-only udev trigger optimization.
+      # udevadm trigger --action=add  ->  --subsystem-match=block --action=add
+      # so settle only waits on block devices (rootfs), not the whole QCS6490
+      # device tree. 03 merges block-only + BOOTDBG markers in one patch
+      # (01 block-only and 02 markers both touch udev and conflict if stacked).
+      # To go back to plain timing without the optimization, swap 03 for 02.
+      # udev-block-and-timing:
+      #   repo: local-patches
+      #   path: oe-core/03-DEBUG-udev-block-and-timing-markers.patch
+  # meta-updater:
+  #   patches:
+      # Bump the ostree kernel cmdline serial console to ttyMSM0,921600
+      # (default is 115200). Applies to the qcom ostree targets like
+      # rb3gen2-core-kit via OSTREE_KERNEL_ARGS. Drop to restore 115200.
+      # console-baud-921600:
+      #   repo: local-patches
+      #   path: meta-updater/02-DEV-console-baud-921600.patch
+      # debug-ostree-prepare-root-timing:
+      #   repo: local-patches
+      #   path: meta-updater/01-DEBUG-ostree-prepare-root-timing.patch
+
+  meta-qcom:
+    patches:
+      # Boot-time ftrace on the kernel cmdline (KERNEL_CMDLINE_EXTRA in
+      # ci/performance.yml -> OSTREE_KERNEL_ARGS on qcom ostree targets). Makes
+      # tracing_on=1 from early boot with a 128M buffer, so the systemd BOOTPROF
+      # trace_marker slices (oe-core/bootprof-unit-load) land in the ring buffer
+      # and can be read via:
+      #   cat /sys/kernel/debug/tracing/trace | grep tracing_mark_write
+      # Adds trace_clock=mono trace_buf_size=128M trace_event=sched:*. Drop to
+      # restore the stock cmdline.
+      cmdline-ftrace-boottime:
+        repo: local-patches
+        path: meta-qcom/10-DEBUG-cmdline-ftrace-boottime.patch
+      # SELinux allow rule so systemd (init_t) and udev (udev_t) can write
+      # ftrace markers to tracefs -- without it, marker writes are denied under
+      # enforcing and nothing is recorded. Enable together with bootprof-unit-load
+      # and cmdline-ftrace-boottime (the three are a set for marker capture).
+      selinux-allow-bootprof-tracefs:
+        repo: local-patches
+        path: meta-qcom/12-DEBUG-selinux-allow-bootprof-tracefs.patch
+      # Boot-time opt: disable PCIe1 controller + PHY on Lemans/Monaco EVK via a
+      # kernel DTS patch wired into linux-qcom_6.18 SRC_URI. An UNPOPULATED PCIe1
+      # slot otherwise costs ~600ms of probe link-training timeout on the boot
+      # critical path. Re-enable (drop this) if the PCIe1 slot is populated.
+      # disable-pcie1-lemans-monaco:
+      #   repo: local-patches
+      #   path: meta-qcom/11-DEV-disable-pcie1-lemans-monaco.patch
+      # meta-qcom HEAD no longer carries the debug cmdline, so the build is
+      # already "clean" (no initcall_debug / log_level=debug). This patch adds
+      # udev.children_max=12 to match QLI1.8's cmdline parallelism for the
+      # initramfs udev trigger+settle comparison.
+      # udev-children-max-12:
+      #   repo: local-patches
+      #   path: meta-qcom/03-DEBUG-udev-children-max-12.patch
+      # Dev speedup: build only qcom-multimedia-proprietary-image. The target
+      # list is defined in BOTH qcom-distro.yml (04) and qcom-distro-catchall.yml
+      # (05, which overrides distro's list), so both must be patched. Drop both
+      # to restore the full image build.
+      build-only-proprietary-image:
+        repo: local-patches
+        path: meta-qcom/04-DEV-build-only-proprietary-image.patch
+      catchall-build-only-proprietary-image:
+        repo: local-patches
+        path: meta-qcom/05-DEV-catchall-build-only-proprietary-image.patch
+      # deferred-probe-reason:
+      #   repo: local-patches
+      #   path: meta-qcom/dbg-meta-qcom-add-prints-for-set_deferred_probe_reason-to-dmesg.patch
+      # rb3gen2-disable-typec-dp:
+      #   repo: local-patches
+      #   path: meta-qcom/01-rb3gen2-disable-typec-dp-display-path.patch
+      # enable-log_level-debug:
+      #   repo: local-patches
+      #   path: meta-qcom/00-enable-systemd.log_level-debug.patch

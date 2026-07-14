@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000001 Mon Sep 17 00:00:00 2001
+From: tnidigan <tnidigan@qti.qualcomm.com>
+Date: Mon, 27 Apr 2026 11:05:00 +0530
+Subject: [PATCH] meta-audioreach: wire boot-time optimization patches into
+ recipes
+
+Add the APM command-timeout reduction patch to audioreach-kernel and the
+snd-card retry-interval reduction patch to audioreach-graphmgr via their
+recipe SRC_URI, shipping the patch files alongside each recipe.
+
+Signed-off-by: tnidigan <tnidigan@qti.qualcomm.com>
+---
+diff --git a/recipes-kernel/audioreach-kernel/audioreach-kernel/0003-qcom-apm-timeout.patch b/recipes-kernel/audioreach-kernel/audioreach-kernel/0003-qcom-apm-timeout.patch
+new file mode 100644
+index 0000000..48566e6
+--- /dev/null
++++ b/recipes-kernel/audioreach-kernel/audioreach-kernel/0003-qcom-apm-timeout.patch
+@@ -0,0 +1,45 @@
++From 0000000000000000000000000000000000000003 Mon Sep 17 00:00:00 2001
++From: tnidigan <tnidigan@qti.qualcomm.com>
++Date: Mon, 27 Apr 2026 10:55:00 +0530
++Subject: [PATCH] audioreach: reduce APM cmd timeout from 2s to 100ms
++
++Reduce wait_time from 2 to 10 and use HZ/wait_time instead of
++wait_time*HZ, giving ~100ms timeout instead of 2s. This saves
++~1.9s during boot when ADSP SPF is not yet ready to respond to
++APM_CMD_GET_SPF_STATE. The dummy ops fallback is acceptable since
++userspace PAL handles real APM communication directly.
++
++Upstream-Status: Inappropriate [boot-time optimization]
++Signed-off-by: tnidigan <tnidigan@qti.qualcomm.com>
++---
++--- a/audioreach-driver/q6apm_audio_pkt.c
+++++ b/audioreach-driver/q6apm_audio_pkt.c
++@@ -129,14 +129,14 @@
++ {
++ 
++ 	struct gpr_hdr *hdr = &pkt->hdr;
++-	int rc, wait_time = 2;
+++	int rc, wait_time = 10;
++ 
++ 	mutex_lock(cmd_lock);
++ 	result->opcode = 0;
++ 	result->status = 0;
++ 
++ 	if (hdr->opcode == APM_CMD_CLOSE_ALL)
++-		wait_time = 20;
+++		wait_time = 10;
++ 
++ 	if (port)
++ 		rc = gpr_send_port_pkt(port, pkt);
++@@ -150,9 +150,9 @@
++ 
++ 	if (rsp_opcode)
++ 		rc = wait_event_timeout(*cmd_wait, (result->opcode == hdr->opcode) ||
++-					(result->opcode == rsp_opcode),	wait_time * HZ);
+++					(result->opcode == rsp_opcode), HZ / wait_time);
++ 	else
++-		rc = wait_event_timeout(*cmd_wait, (result->opcode == hdr->opcode), wait_time * HZ);
+++		rc = wait_event_timeout(*cmd_wait, (result->opcode == hdr->opcode), HZ / wait_time);
++ 
++ 	if (!rc) {
++ 		dev_err(&g_apm->adev->dev, "CMD timeout for [%x] opcode\n", hdr->opcode);
+diff --git a/recipes-kernel/audioreach-kernel/audioreach-kernel_git.bb b/recipes-kernel/audioreach-kernel/audioreach-kernel_git.bb
+index 7d4a18b..26566ec 100644
+--- a/recipes-kernel/audioreach-kernel/audioreach-kernel_git.bb
++++ b/recipes-kernel/audioreach-kernel/audioreach-kernel_git.bb
+@@ -9,6 +9,7 @@ SRC_URI = "git://github.com/AudioReach/audioreach-kernel.git;protocol=https;bran
+            file://audioreach.rules \
+            file://asoc-blacklist.conf \
+            file://v1-0001-audioreach-driver-audioreach-common-Fix-WSA-Mute-.patch \
++           file://0003-qcom-apm-timeout.patch \
+     "
+ SRCREV = "664f553de5295ca95f1dfe41fa6fba00f6035d9c"
+ 
+diff --git a/recipes/audioreach-graphmgr/audioreach-graphmgr/0001-reduce-snd-card-retry-interval.patch b/recipes/audioreach-graphmgr/audioreach-graphmgr/0001-reduce-snd-card-retry-interval.patch
+new file mode 100644
+index 0000000..817c4ca
+--- /dev/null
++++ b/recipes/audioreach-graphmgr/audioreach-graphmgr/0001-reduce-snd-card-retry-interval.patch
+@@ -0,0 +1,41 @@
++From 0000000000000000000000000000000000000004 Mon Sep 17 00:00:00 2001
++From: tnidigan <tnidigan@qti.qualcomm.com>
++Date: Mon, 27 Apr 2026 11:00:00 +0530
++Subject: [PATCH] agm: reduce snd card retry interval from 1s to 50ms
++
++RETRY_INTERVAL of 1 second causes ~1s wasted boot time when the sound
++card becomes available just after a poll. Reduce to 50ms so the card
++is detected within 50ms of becoming available instead of up to 1s.
++
++Upstream-Status: Inappropriate [boot-time optimization]
++Signed-off-by: tnidigan <tnidigan@qti.qualcomm.com>
++---
++--- a/service/src/device.c
+++++ b/service/src/device.c
++@@ -56,7 +56,7 @@
++ #define SNDCARD_PATH "/sys/kernel/snd_card/card_state"
++ #define PCM_DEVICE_FILE "/proc/asound/pcm"
++ #define MAX_RETRY 100 /*Device will try these many times before return an error*/
++-#define RETRY_INTERVAL 1 /*Retry interval in seconds*/
+++#define RETRY_INTERVAL_MS 50 /*Retry interval in milliseconds*/
++ 
++ #ifdef DYNAMIC_LOG_ENABLED
++ #include <log_xml_parser.h>
++@@ -1246,7 +1246,7 @@
++         }
++ #endif
++         retries--;
++-        sleep(RETRY_INTERVAL);
+++        usleep(RETRY_INTERVAL_MS * 1000);
++     } while ( retries > 0);
++ 
++     if (0 == retries) {
++@@ -1453,7 +1453,7 @@
++             break;
++         } else {
++             AGM_LOGI("Sound card not found, retry %d", retry++);
++-            sleep(1);
+++            usleep(50 * 1000);
++         }
++     } while (!snd_card_found && retry <= MAX_RETRY_CNT);
++ 
+diff --git a/recipes/audioreach-graphmgr/audioreach-graphmgr_git.bb b/recipes/audioreach-graphmgr/audioreach-graphmgr_git.bb
+index 52e1e07..e0dbf4e 100644
+--- a/recipes/audioreach-graphmgr/audioreach-graphmgr_git.bb
++++ b/recipes/audioreach-graphmgr/audioreach-graphmgr_git.bb
+@@ -8,6 +8,7 @@ PV = "0.0+git"
+ SRC_URI = "git://git@github.com/Audioreach/audioreach-graphmgr.git;protocol=https;branch=master"
+ SRC_URI     += "file://agm_server.service"
+ SRC_URI     += "file://agm-dbus.conf"
++SRC_URI     += "file://0001-reduce-snd-card-retry-interval.patch"
+ 
+ DEPENDS = "glib-2.0 tinyalsa audioreach-graphservices audioreach-conf"
+ 

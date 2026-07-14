@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000006 Mon Sep 17 00:00:00 2001
+From: Boot Debug <noreply@qti.qualcomm.com>
+Date: Mon, 30 Jun 2026 00:00:00 +0000
+Subject: [DEV] qcom-distro-catchall.yml: build only proprietary image
+
+The catchall distro defines its own target list (overriding qcom-distro.yml),
+so the dev-speedup must also be applied here. Comment out multimedia and
+container-orchestration so a --catchall build only produces
+qcom-multimedia-proprietary-image. Drop to restore the full list.
+
+Upstream-Status: Inappropriate [local dev speedup]
+---
+diff --git a/ci/qcom-distro-catchall.yml b/ci/qcom-distro-catchall.yml
+index c63a2303..51d170dd 100644
+--- a/ci/qcom-distro-catchall.yml
++++ b/ci/qcom-distro-catchall.yml
+@@ -8,6 +8,6 @@ header:
+ distro: qcom-distro-catchall
+ 
+ target:
+-  - qcom-multimedia-image
++  # - qcom-multimedia-image            # disabled: build only proprietary image to speed up dev
+   - qcom-multimedia-proprietary-image
+-  - qcom-container-orchestration-image
++  # - qcom-container-orchestration-image  # disabled
