@@ -57,7 +57,7 @@ they target:
 | Dir | Targets | Contents |
 |-----|---------|----------|
 | `meta-audioreach/` | meta-audioreach | APM timeout + snd-card retry boot-time opt |
-| `meta-qcom-distro/` | meta-qcom-distro | QuickBoot audio/camera/display recipes → `qcom-multimedia-image` |
+| `meta-qcom-distro/` | meta-qcom-distro | QuickBoot runtime manager + camera/audio/display/udev recipes → `qcom-multimedia-image` |
 | `oe-core/` | oe-core | BOOTPROF systemd unit-load instrumentation, initramfs timing markers, early tracefs mount, block-only udev trigger |
 | `meta-qcom/` | meta-qcom | boot-time ftrace cmdline, SELinux allow for tracefs markers, PCIe1 disable, build-only-proprietary-image dev speedup |
 | `meta-updater/` | meta-updater | console baud bump, ostree prepare-root timing (currently disabled) |

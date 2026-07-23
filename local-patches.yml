@@ -38,14 +38,16 @@ repos:
         path: meta-audioreach/0001-boot-time-optimizations-apm-timeout-and-snd-card-retry.patch
   meta-qcom-distro:
     patches:
-      # QuickBoot early-boot optimizations: adds quickboot-audio/camera/display
-      # recipes under recipes-support/quickboot/ (sources fetched from
-      # github.com/wenwfu/quickboot, branch multi-target, pinned SRCREV) and
-      # wires the three packages into qcom-multimedia-image per machine
-      # (iq-9075-evk, rb3gen2-core-kit). Drop to remove quickboot from the image.
-      quickboot-recipes:
+      # QuickBoot early-boot optimizations: adds the quickboot-core runtime
+      # framework plus quickboot-{camera,audio,display,udev} recipes under
+      # recipes-quickboot/ (sources fetched from github.com/wenwfu/quickboot,
+      # branch quickboot-runtime-manager, pinned SRCREV), wires them into
+      # qcom-multimedia-image via PACKAGE_INSTALL_ATTEMPTONLY, and enables the
+      # "quickboot" DISTRO_FEATURE by default. Comment out to drop quickboot
+      # entirely.
+      quickboot:
         repo: local-patches
-        path: meta-qcom-distro/0001-meta-qcom-distro-add-quickboot-recipes.patch
+        path: meta-qcom-distro/0001-meta-qcom-distro-add-quickboot.patch
   oe-core:
     patches:
       # BOOTPROF: instrument systemd unit load/parse phase (manager.c
@@ -53,17 +55,17 @@ repos:
       # /dev/kmsg (visible in dmesg). Splits UnitsLoadStart..UnitsLoadFinish
       # into per-type enumerate() vs unit-file parse+deps. Drop to restore
       # stock systemd. Read results with: dmesg | grep BOOTPROF
-      bootprof-unit-load:
-        repo: local-patches
-        path: oe-core/10-DEBUG-bootprof-unit-load-manager.patch
+      # bootprof-unit-load:
+      #   repo: local-patches
+      #   path: oe-core/10-DEBUG-bootprof-unit-load-manager.patch
       # Mount tracefs in the initramfs (right after /sys) so it rides
       # `mount --move /sys` onto the rootfs and is already present when systemd
       # writes trace_marker during unit-load (~3.5s) -- before systemd's own
       # sys-kernel-tracing.mount (~3.85s). Without this the earliest markers are
       # lost. Pairs with bootprof-unit-load + selinux-allow-bootprof-tracefs.
-      initramfs-mount-tracefs-early:
-        repo: local-patches
-        path: oe-core/11-DEBUG-initramfs-mount-tracefs-early.patch
+      # initramfs-mount-tracefs-early:
+      #   repo: local-patches
+      #   path: oe-core/11-DEBUG-initramfs-mount-tracefs-early.patch
       # Boot-time opt: limit the initramfs udevadm trigger to block devices
       # (udevadm trigger --action=add -> --subsystem-match=block --action=add),
       # so the initramfs udev settle only waits on block devices (needed for
@@ -102,23 +104,23 @@ repos:
       #   cat /sys/kernel/debug/tracing/trace | grep tracing_mark_write
       # Adds trace_clock=mono trace_buf_size=128M trace_event=sched:*. Drop to
       # restore the stock cmdline.
-      cmdline-ftrace-boottime:
-        repo: local-patches
-        path: meta-qcom/10-DEBUG-cmdline-ftrace-boottime.patch
+      # cmdline-ftrace-boottime:
+      #   repo: local-patches
+      #   path: meta-qcom/10-DEBUG-cmdline-ftrace-boottime.patch
       # SELinux allow rule so systemd (init_t) and udev (udev_t) can write
       # ftrace markers to tracefs -- without it, marker writes are denied under
       # enforcing and nothing is recorded. Enable together with bootprof-unit-load
       # and cmdline-ftrace-boottime (the three are a set for marker capture).
-      selinux-allow-bootprof-tracefs:
-        repo: local-patches
-        path: meta-qcom/12-DEBUG-selinux-allow-bootprof-tracefs.patch
+      # selinux-allow-bootprof-tracefs:
+      #   repo: local-patches
+      #   path: meta-qcom/12-DEBUG-selinux-allow-bootprof-tracefs.patch
       # Boot-time opt: disable PCIe1 controller + PHY on Lemans/Monaco EVK via a
       # kernel DTS patch wired into linux-qcom_6.18 SRC_URI. An UNPOPULATED PCIe1
       # slot otherwise costs ~600ms of probe link-training timeout on the boot
       # critical path. Re-enable (drop this) if the PCIe1 slot is populated.
-      # disable-pcie1-lemans-monaco:
-      #   repo: local-patches
-      #   path: meta-qcom/11-DEV-disable-pcie1-lemans-monaco.patch
+      disable-pcie1-lemans-monaco:
+        repo: local-patches
+        path: meta-qcom/11-DEV-disable-pcie1-lemans-monaco.patch
       # meta-qcom HEAD no longer carries the debug cmdline, so the build is
       # already "clean" (no initcall_debug / log_level=debug). This patch adds
       # udev.children_max=12 to match QLI1.8's cmdline parallelism for the
@@ -136,6 +138,27 @@ repos:
       catchall-build-only-proprietary-image:
         repo: local-patches
         path: meta-qcom/05-DEV-catchall-build-only-proprietary-image.patch
+      # Boot-time opt: shorten the fixed 5s glink channel open_ack/open_req
+      # timeout to 1s (drivers/rpmsg/qcom_glink_native.c, via linux-qcom_6.18
+      # SRC_URI). A missed first-open window on the audio apr/ADSP channel
+      # otherwise costs a full 5s deferred-probe round-trip, making audio
+      # readiness unstable and late (~3s / ~8s / ~13s across boots). Success
+      # path is unchanged; only the miss penalty drops 5s -> <1s, pulling
+      # worst-case audio_ready back to ~3s. Drop to restore the stock 5s wait.
+      # glink-shorten-open-ack-timeout:
+      #   repo: local-patches
+      #   path: meta-qcom/20-DEV-glink-shorten-open-ack-timeout-5s-1s.patch
+      # Boot-time opt (audio): under SELinux enforcing, preloading qrtr/qrtr_smd
+      # via modules-load.d fails with EPERM -- they register the PF_QIPCRTR net
+      # protocol family at init (needs CAP_NET_ADMIN), but systemd_modules_load_t
+      # lacks net_admin (dontaudit'd, so no avc; confirmed via `semodule -DB`:
+      # avc denied { net_admin } capability=12 comm=systemd-modules). qrtr then
+      # loads ~5s late and that early-glink miss delays audio (apr/ADSP) readiness
+      # from ~3s to ~8-13s. Grants systemd_modules_load_t net_admin so qrtr
+      # preloads at ~1.8s. Drop to restore stock policy.
+      selinux-allow-modules-load-net_admin-qrtr:
+        repo: local-patches
+        path: meta-qcom/21-DEV-selinux-allow-modules-load-net_admin-qrtr.patch
       # deferred-probe-reason:
       #   repo: local-patches
       #   path: meta-qcom/dbg-meta-qcom-add-prints-for-set_deferred_probe_reason-to-dmesg.patch
