@@ -1,34 +1,42 @@
 From eba79588af7bcf981fcf2bba3233214cad30ab8e Mon Sep 17 00:00:00 2001
 From: Wenwen Fu <wenwfu@qti.qualcomm.com>
 Date: Thu, 23 Jul 2026 14:09:06 +0800
-Subject: [PATCH] meta-qcom-distro: add quickboot recipes, wire into image,
- enable by default
+Subject: [PATCH] meta-qcom-distro: add QuickBoot support
 
-Add the QuickBoot recipes under recipes-quickboot/: subsystem/ holds
-quickboot-{camera,audio,display,udev} and core/ holds quickboot-core (the
-shared runtime that detects the board's SoC family, watches
-/etc/quickboot/request, and applies/reverts each subsystem's manifest). All
-fetch sources from github.com/wenwfu/quickboot (branch
-quickboot-runtime-manager, pinned SRCREV) via the shared quickboot-git.inc.
-Each recipe stages files/common + files/<SOC_FAMILY> into the flat profile
-library; the customer-reference apps under examples/ and the dev-only push.bat
-helpers under test/ are not installed by any recipe.
+Add QuickBoot recipes for the shared runtime and subsystem-specific payloads.
+quickboot-core installs the runtime service and request/state files used to
+apply or revert boot-time optimization profiles. The subsystem recipes package
+the camera, display, audio, and udev payloads consumed by that runtime.
 
-camxoverridesettings.txt and the camera-sensor-prune.sh setup script are not
-installed unconditionally; they stage into the profile payload and are linked
-into /etc/camera/ only when camera=on, via the camera manifests.
+All QuickBoot recipes use a shared git source include so the upstream branch,
+SRCREV, license metadata, and version handling are maintained in one place.
+The recipes are gated by the quickboot DISTRO_FEATURE through features_check,
+and their COMPATIBLE_MACHINE value is generated from a common SoC allow-list.
 
-Wire the packages into qcom-multimedia-image via PACKAGE_INSTALL_ATTEMPTONLY
-(a weak RRECOMMENDS), gated on the "quickboot" DISTRO_FEATURE, the central
-QUICKBOOT_SOC_FAMILIES allow-list, and QUICKBOOT_SUBSYSTEMS for per-subsystem
-payload control. Unsupported SoC families do not pull quickboot packages,
-avoiding unbuildable-provider failures before rootfs attempt-only install
-handling can run. Each recipe also inherits features_check with
-REQUIRED_DISTRO_FEATURES = "quickboot".
+Add recipes-quickboot/quickboot-support.inc as the single place to maintain
+QuickBoot policy:
+  - QUICKBOOT_SOC_FAMILIES lists the SoC families that support QuickBoot.
+  - QUICKBOOT_SUBSYSTEMS lists the optional subsystem payload packages to add
+    to the image.
+  - quickboot-core is added automatically when at least one subsystem payload
+    package is selected.
 
-Enable the "quickboot" DISTRO_FEATURE by default (add it to qcom-base.inc's
-DISTRO_FEATURES) so the packages are built and pulled in out of the box.
+Wire qcom-multimedia-image to this policy helper instead of appending a fixed
+package list. This keeps unsupported SoC families from pulling QuickBoot
+packages, avoiding unbuildable runtime provider failures when BitBake skips a
+QuickBoot recipe due to COMPATIBLE_MACHINE.
 
+The default packaging policy enables QuickBoot for qcm6490 and qcs9100, and
+adds the camera, display, audio, and udev payload packages to the image. These
+payloads are present but inactive by default: the generated request file keeps
+each subsystem disabled until the user explicitly enables the desired
+optimizations at runtime.
+
+Integrators can reduce the image payload by overriding QUICKBOOT_SUBSYSTEMS in
+local.conf, distro config, or machine config.
+
+Enable the quickboot DISTRO_FEATURE in qcom-base so supported platforms include
+QuickBoot packages in qcom-multimedia-image by default.
 Signed-off-by: Wenwen Fu <wenwfu@qti.qualcomm.com>
 ---
  conf/distro/include/qcom-base.inc             |  1 +
