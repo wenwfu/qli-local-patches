@@ -19,11 +19,12 @@ installed unconditionally; they stage into the profile payload and are linked
 into /etc/camera/ only when camera=on, via the camera manifests.
 
 Wire the packages into qcom-multimedia-image via PACKAGE_INSTALL_ATTEMPTONLY
-(a weak RRECOMMENDS), gated on the "quickboot" DISTRO_FEATURE. Attempt-only
-means each recipe's COMPATIBLE_MACHINE decides inclusion -- packages are
-silently skipped on unsupported SoC families -- so the image stays
-SoC-agnostic with no per-family keying. Each recipe also inherits
-features_check with REQUIRED_DISTRO_FEATURES = "quickboot".
+(a weak RRECOMMENDS), gated on the "quickboot" DISTRO_FEATURE, the central
+QUICKBOOT_SOC_FAMILIES allow-list, and QUICKBOOT_SUBSYSTEMS for per-subsystem
+payload control. Unsupported SoC families do not pull quickboot packages,
+avoiding unbuildable-provider failures before rootfs attempt-only install
+handling can run. Each recipe also inherits features_check with
+REQUIRED_DISTRO_FEATURES = "quickboot".
 
 Enable the "quickboot" DISTRO_FEATURE by default (add it to qcom-base.inc's
 DISTRO_FEATURES) so the packages are built and pulled in out of the box.
@@ -31,16 +32,18 @@ DISTRO_FEATURES) so the packages are built and pulled in out of the box.
 Signed-off-by: Wenwen Fu <wenwfu@qti.qualcomm.com>
 ---
  conf/distro/include/qcom-base.inc             |  1 +
- .../images/qcom-multimedia-image.bb           | 10 +++
- recipes-quickboot/core/quickboot-core_1.0.bb  | 63 +++++++++++++++++++
+ .../images/qcom-multimedia-image.bb           |  9 +++
+ recipes-quickboot/core/quickboot-core_1.0.bb  | 64 +++++++++++++++++++
  recipes-quickboot/quickboot-git.inc           | 23 +++++++
- .../subsystem/quickboot-audio_1.0.bb          | 45 +++++++++++++
- .../subsystem/quickboot-camera_1.0.bb         | 53 ++++++++++++++++
- .../subsystem/quickboot-display_1.0.bb        | 45 +++++++++++++
- .../subsystem/quickboot-udev_1.0.bb           | 32 ++++++++++
- 8 files changed, 272 insertions(+)
+ recipes-quickboot/quickboot-support.inc       | 30 +++++++++
+ .../subsystem/quickboot-audio_1.0.bb          | 46 +++++++++++++
+ .../subsystem/quickboot-camera_1.0.bb         | 54 ++++++++++++++++
+ .../subsystem/quickboot-display_1.0.bb        | 46 +++++++++++++
+ .../subsystem/quickboot-udev_1.0.bb           | 33 ++++++++++
+ 9 files changed, 306 insertions(+)
  create mode 100644 recipes-quickboot/core/quickboot-core_1.0.bb
  create mode 100644 recipes-quickboot/quickboot-git.inc
+ create mode 100644 recipes-quickboot/quickboot-support.inc
  create mode 100644 recipes-quickboot/subsystem/quickboot-audio_1.0.bb
  create mode 100644 recipes-quickboot/subsystem/quickboot-camera_1.0.bb
  create mode 100644 recipes-quickboot/subsystem/quickboot-display_1.0.bb
@@ -66,15 +69,15 @@ index e4f01fa..c99e05d 100644
  # IMSDK currently only used and tested on ARMv8 (aarch64) machines.
  CORE_IMAGE_BASE_INSTALL:append:aarch64 = " gst-plugins-imsdk-oss"
 
-+# QuickBoot early-boot optimizations, gated on the "quickboot" DISTRO_FEATURE.
-+# Installed attempt-only (a weak RRECOMMENDS): each quickboot recipe's
-+# COMPATIBLE_MACHINE limits it to its SoC family, and an attempt-only install
-+# silently skips a package on families where it is not compatible -- so the
-+# image needs no per-SoC-family keying and stays SoC-agnostic. On an
-+# unsupported family the packages are simply not pulled in; where the feature
-+# is off the list is empty.
++require ../../recipes-quickboot/quickboot-support.inc
++
++# QuickBoot early-boot optimizations. DISTRO_FEATURES gates the feature
++# globally, while QUICKBOOT_SOC_FAMILIES keeps unsupported SoC families from
++# pulling recipes that COMPATIBLE_MACHINE will skip during parsing.
++# QUICKBOOT_SUBSYSTEMS controls optional payload packages; core is pulled in
++# automatically when at least one subsystem is enabled.
 +PACKAGE_INSTALL_ATTEMPTONLY:append = " ${@bb.utils.contains('DISTRO_FEATURES', 'quickboot', \
-+    'quickboot-core quickboot-audio quickboot-camera quickboot-display quickboot-udev', '', d)}"
++    quickboot_package_list(d), '', d)}"
 +
  # let's make sure we have a good image.
  REQUIRED_DISTRO_FEATURES += "wayland"
@@ -83,7 +86,7 @@ new file mode 100644
 index 0000000..0664e78
 --- /dev/null
 +++ b/recipes-quickboot/core/quickboot-core_1.0.bb
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,64 @@
 +SUMMARY = "QuickBoot runtime optimization core"
 +DESCRIPTION = "Detects the running board's SoC family, watches \
 +/etc/quickboot/request, and activates or reverts per-subsystem \
@@ -92,6 +95,7 @@ index 0000000..0664e78
 +tree."
 +
 +require ../quickboot-git.inc
++require ../quickboot-support.inc
 +
 +# Gated on the "quickboot" DISTRO_FEATURE: skipped entirely unless the distro
 +# enables it.
@@ -100,7 +104,7 @@ index 0000000..0664e78
 +
 +RDEPENDS:${PN} += "bash"
 +
-+COMPATIBLE_MACHINE = "(qcm6490|qcs9100)"
++COMPATIBLE_MACHINE = "${@quickboot_compatible_machine(d)}"
 +
 +# Records the build-time SOC_FAMILY into the rootfs, so this package's content
 +# is machine-specific.
@@ -176,15 +180,52 @@ index 0000000..3dcd1c2
 +# sets BB_GIT_DEFAULT_DESTSUFFIX = "${BP}", so the git checkout unpacks straight
 +# to ${S}; recipes reach ${S}/subsystems/<subsys>/files/... and ${S}/core/
 +# files/... . Do NOT set S = "${UNPACKDIR}/git" -- do_qa_unpack fatals on it.
+diff --git a/recipes-quickboot/quickboot-support.inc b/recipes-quickboot/quickboot-support.inc
+new file mode 100644
+index 0000000..3ef29a5
+--- /dev/null
++++ b/recipes-quickboot/quickboot-support.inc
+@@ -0,0 +1,30 @@
++# Single source of truth for QuickBoot SoC and subsystem support.
++QUICKBOOT_SOC_FAMILIES = "qcm6490 qcs9100"
++QUICKBOOT_SUBSYSTEMS ?= "camera display audio udev"
++
++def quickboot_soc_supported(d):
++    soc_family = d.getVar("SOC_FAMILY") or ""
++    supported = (d.getVar("QUICKBOOT_SOC_FAMILIES") or "").split()
++    return soc_family in supported
++
++def quickboot_compatible_machine(d):
++    families = (d.getVar("QUICKBOOT_SOC_FAMILIES") or "").split()
++    return "(" + "|".join(families) + ")" if families else "^$"
++
++def quickboot_package_list(d):
++    if not quickboot_soc_supported(d):
++        return ""
++
++    enabled = (d.getVar("QUICKBOOT_SUBSYSTEMS") or "").split()
++    subsystem_pkgs = {
++        "audio": "quickboot-audio",
++        "camera": "quickboot-camera",
++        "display": "quickboot-display",
++        "udev": "quickboot-udev",
++    }
++
++    packages = [pkg for name, pkg in subsystem_pkgs.items() if name in enabled]
++    if packages:
++        packages.insert(0, "quickboot-core")
++
++    return " ".join(packages)
 diff --git a/recipes-quickboot/subsystem/quickboot-audio_1.0.bb b/recipes-quickboot/subsystem/quickboot-audio_1.0.bb
 new file mode 100644
 index 0000000..851dfc4
 --- /dev/null
 +++ b/recipes-quickboot/subsystem/quickboot-audio_1.0.bb
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,46 @@
 +SUMMARY = "Early Audio Boot Optimizations"
 +
 +require ../quickboot-git.inc
++require ../quickboot-support.inc
 +
 +# Gated on the "quickboot" DISTRO_FEATURE: skipped entirely unless the distro
 +# enables it.
@@ -193,7 +234,7 @@ index 0000000..851dfc4
 +
 +RDEPENDS:${PN} += "bash quickboot-core"
 +
-+COMPATIBLE_MACHINE = "(qcm6490|qcs9100)"
++COMPATIBLE_MACHINE = "${@quickboot_compatible_machine(d)}"
 +
 +# Source slices in the fetched git tree: common (shared) and family payload.
 +# examples/audio/ (demo apps) is customer reference only and is NOT installed.
@@ -232,10 +273,11 @@ new file mode 100644
 index 0000000..4bc3028
 --- /dev/null
 +++ b/recipes-quickboot/subsystem/quickboot-camera_1.0.bb
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,54 @@
 +SUMMARY = "Early Camera Boot Optimizations"
 +
 +require ../quickboot-git.inc
++require ../quickboot-support.inc
 +
 +# Gated on the "quickboot" DISTRO_FEATURE: skipped entirely unless the distro
 +# enables it.
@@ -244,7 +286,7 @@ index 0000000..4bc3028
 +
 +RDEPENDS:${PN} += "bash quickboot-core"
 +
-+COMPATIBLE_MACHINE = "(qcm6490|qcs9100)"
++COMPATIBLE_MACHINE = "${@quickboot_compatible_machine(d)}"
 +
 +# Source slices in the fetched git tree: common (shared) and family payload.
 +# examples/camera/ (demo apps) is customer reference only and is NOT installed.
@@ -291,10 +333,11 @@ new file mode 100644
 index 0000000..9f7627e
 --- /dev/null
 +++ b/recipes-quickboot/subsystem/quickboot-display_1.0.bb
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,46 @@
 +SUMMARY = "Early Display Boot Optimizations"
 +
 +require ../quickboot-git.inc
++require ../quickboot-support.inc
 +
 +# Gated on the "quickboot" DISTRO_FEATURE: skipped entirely unless the distro
 +# enables it.
@@ -303,7 +346,7 @@ index 0000000..9f7627e
 +
 +RDEPENDS:${PN} += "bash quickboot-core"
 +
-+COMPATIBLE_MACHINE = "(qcm6490|qcs9100)"
++COMPATIBLE_MACHINE = "${@quickboot_compatible_machine(d)}"
 +
 +QB_COMMON = "${S}/subsystems/display/files/common"
 +QB_SRC = "${S}/subsystems/display/files/${SOC_FAMILY}"
@@ -342,10 +385,11 @@ new file mode 100644
 index 0000000..5fcf96b
 --- /dev/null
 +++ b/recipes-quickboot/subsystem/quickboot-udev_1.0.bb
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,33 @@
 +SUMMARY = "Early udev Coldplug Boot Optimizations"
 +
 +require ../quickboot-git.inc
++require ../quickboot-support.inc
 +
 +# Gated on the "quickboot" DISTRO_FEATURE: skipped entirely unless the distro
 +# enables it.
@@ -357,7 +401,7 @@ index 0000000..5fcf96b
 +# 55-qcom-firmware-noblkid.rules assumes only sda holds filesystems and
 +# sdb..sdz are firmware disks with nothing mounted -- verified on Kodiak;
 +# re-verify the UFS partition layout on iq-9075 (SA8775P) before relying on it.
-+COMPATIBLE_MACHINE = "(qcm6490|qcs9100)"
++COMPATIBLE_MACHINE = "${@quickboot_compatible_machine(d)}"
 +
 +# All payload is shared across SoC families (files/common).
 +QB_SRC = "${S}/subsystems/udev/files/common"
