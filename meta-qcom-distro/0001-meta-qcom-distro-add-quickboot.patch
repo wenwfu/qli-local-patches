@@ -35,12 +35,12 @@ Signed-off-by: Wenwen Fu <wenwfu@qti.qualcomm.com>
  .../images/qcom-multimedia-image.bb           |  9 +++
  recipes-quickboot/core/quickboot-core_1.0.bb  | 64 +++++++++++++++++++
  recipes-quickboot/quickboot-git.inc           | 23 +++++++
- recipes-quickboot/quickboot-support.inc       | 30 +++++++++
+ recipes-quickboot/quickboot-support.inc       | 40 +++++++++++
  .../subsystem/quickboot-audio_1.0.bb          | 46 +++++++++++++
  .../subsystem/quickboot-camera_1.0.bb         | 54 ++++++++++++++++
  .../subsystem/quickboot-display_1.0.bb        | 46 +++++++++++++
  .../subsystem/quickboot-udev_1.0.bb           | 33 ++++++++++
- 9 files changed, 306 insertions(+)
+ 9 files changed, 316 insertions(+)
  create mode 100644 recipes-quickboot/core/quickboot-core_1.0.bb
  create mode 100644 recipes-quickboot/quickboot-git.inc
  create mode 100644 recipes-quickboot/quickboot-support.inc
@@ -185,9 +185,20 @@ new file mode 100644
 index 0000000..3ef29a5
 --- /dev/null
 +++ b/recipes-quickboot/quickboot-support.inc
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,40 @@
 +# Single source of truth for QuickBoot SoC and subsystem support.
 +QUICKBOOT_SOC_FAMILIES = "qcm6490 qcs9100"
++
++# Optional QuickBoot payloads to install. Valid values are:
++# camera display audio udev
++#
++# All subsystems are enabled by default. Override this in local.conf, distro, or
++# machine config to reduce the installed payload, for example:
++#   QUICKBOOT_SUBSYSTEMS = "camera display"
++#   QUICKBOOT_SUBSYSTEMS:remove = "udev"
++#
++# quickboot-core is not listed here; it is added automatically whenever at
++# least one subsystem is enabled.
 +QUICKBOOT_SUBSYSTEMS ?= "camera display audio udev"
 +
 +def quickboot_soc_supported(d):
